@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Local runtime state
+workspace/
+codex-home/
+data/
+
+# Databases and journals
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+
+# Logs and generated artifacts
+*.log
+*.tar.gz
+
+# Local benchmarks / temp files
+.benchmarks/

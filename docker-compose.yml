@@ -1,0 +1,53 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  orchestrator:
+    image: codex-orchestrator:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      SQLITE_PATH: /app/data/orchestrator.db
+      WORKSPACE_ROOT: /app/workspace
+      RUNS_ROOT: /app/workspace/runs
+      LLM_PROVIDER: ${LLM_PROVIDER:-stub}
+      PLANNER_MODE: ${PLANNER_MODE:-llm_plan}
+      CONTRACT_STRICTNESS: ${CONTRACT_STRICTNESS:-balanced}
+      RALPH_PRD_FILE_NAME: ${RALPH_PRD_FILE_NAME:-prd.json}
+      RALPH_PROGRESS_FILE_NAME: ${RALPH_PROGRESS_FILE_NAME:-progress.txt}
+      RALPH_AUTO_QUEUE_NEXT_STORY: ${RALPH_AUTO_QUEUE_NEXT_STORY:-true}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CODEX_USE_OPENAI_API_KEY: ${CODEX_USE_OPENAI_API_KEY:-true}
+      CODEX_MODEL: ${CODEX_MODEL:-gpt-5.3-codex-spark}
+      CODEX_CLI_CMD: ${CODEX_CLI_CMD:-codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check}
+      HOME: /root
+      CODEX_HOME: /root/.codex
+      CODEX_CONFIG_HOME: /root/.codex
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+    volumes:
+      - ./workspace:/app/workspace
+      - ./data:/app/data
+      - ./codex-home:/root/.codex
+      - ./orchestrator:/app/orchestrator
+      - ./streamlit_app.py:/app/streamlit_app.py
+      - ./pilot.py:/app/pilot.py
+
+  ui:
+    image: codex-orchestrator:dev
+    command: streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    environment:
+      HOME: /root
+      AGENT_API_BASE_URL: http://orchestrator:8080
+    ports:
+      - "8501:8501"
+    depends_on:
+      - orchestrator
+    volumes:
+      - ./streamlit_app.py:/app/streamlit_app.py

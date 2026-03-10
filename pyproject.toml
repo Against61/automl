@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-orchestrator"
+version = "0.1.0"
+description = "Event-driven orchestrator over Codex CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116.0",
+  "uvicorn[standard]>=0.35.0",
+  "pydantic>=2.10.0",
+  "pydantic-settings>=2.8.0",
+  "aiosqlite>=0.20.0",
+  "redis>=5.1.0",
+  "openai>=1.60.0",
+  "numpy>=2.2.0",
+  "streamlit>=1.42.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.25.0",
+  "httpx>=0.28.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["orchestrator"]
