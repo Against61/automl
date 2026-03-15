@@ -209,6 +209,7 @@ class WorkspaceMetricsReader:
             "dataset_parse_ok",
             "class_consistency_across_splits",
             "split_nonempty",
+            "budget_respected",
         )
         for key in bool_keys:
             value = mapping.get(key)
@@ -220,6 +221,7 @@ class WorkspaceMetricsReader:
             "evaluation_split",
             "task_family",
             "primary_metric_key",
+            "budget_tier",
         )
         for key in string_keys:
             value = mapping.get(key)

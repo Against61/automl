@@ -33,6 +33,7 @@ class PlanInput:
     previous_error: str | None = None
     last_failed_step: dict[str, Any] | None = None
     previous_verification: dict[str, Any] | None = None
+    evaluation_contract: dict[str, Any] | None = None
 
 
 class Planner:
@@ -98,12 +99,29 @@ class CodexOnlyPlanner(Planner):
             label="previous_error",
             focus_terms=["error", "traceback", "module", "missing", "timeout"],
         ) or "none"
+        evaluation_contract_block = _PROMPT_CONTENT.compact_text_for_prompt(
+            json.dumps(payload.evaluation_contract, ensure_ascii=True, indent=2)
+            if isinstance(payload.evaluation_contract, dict) and payload.evaluation_contract
+            else None,
+            label="evaluation_contract",
+            focus_terms=[
+                "task_family",
+                "primary_metric_key",
+                "primary_direction",
+                "primary_scale",
+                "proxy_metric_kind",
+                "target_value",
+                "micro_split_id",
+                "macro_split_id",
+            ],
+        ) or "none"
 
         codex_prompt = (
             "You are the sole execution engine for this run. "
             "Complete the task end-to-end in the current workspace.\n\n"
             f"Goal:\n{payload.goal}\n\n"
             f"Constraints:\n{constraints_block}\n\n"
+            f"Evaluation contract:\n{evaluation_contract_block}\n\n"
             f"Retrieved context:\n{context_block}\n\n"
             f"Workspace snapshot:\n{workspace_snapshot_block}\n\n"
             f"Experiment history:\n{experiment_history_block}\n\n"
@@ -118,6 +136,9 @@ class CodexOnlyPlanner(Planner):
             "- A train-subset overfit check may be used only as a diagnostic and never as the reported acceptance metric.\n"
             "- Any metrics artifact used for acceptance must explicitly state which split was used for evaluation.\n"
             "- Any training or smoke-test script must write structured metrics to metrics.json with canonical keys such as train_accuracy, eval_accuracy, test_accuracy, loss, threshold_met, and split_integrity_passed.\n"
+            "- If runtime provides OPENIN_BUDGET_TIER or OPENIN_MAX_* variables, treat them as hard limits rather than soft hints.\n"
+            "- Any runtime-budgeted script must write budget_tier, budget_respected, effective_train_seconds, warmup_seconds, max_effective_train_seconds, max_epochs, max_steps, epochs_trained, and train_steps_completed into the metrics artifact.\n"
+            "- effective_train_seconds must start after import/setup/warmup and stop increasing once the training loop exits.\n"
             "- A markdown report is optional and secondary; quality decisions should be derivable from metrics.json.\n"
             "- Do not keep long-running training inside a Codex step; if training execution is needed, use an explicit shell command step.\n"
             "- If a command fails, fix root cause and retry before finishing.\n"
@@ -205,6 +226,22 @@ class StubPlanner(Planner):
             constraints=payload.constraints,
         )
         stub_intent = resolve_stub_plan_intent(payload, inferred_intent)
+        evaluation_contract_block = _PROMPT_CONTENT.compact_text_for_prompt(
+            json.dumps(payload.evaluation_contract, ensure_ascii=True, indent=2)
+            if isinstance(payload.evaluation_contract, dict) and payload.evaluation_contract
+            else None,
+            label="evaluation_contract",
+            focus_terms=[
+                "task_family",
+                "primary_metric_key",
+                "primary_direction",
+                "primary_scale",
+                "proxy_metric_kind",
+                "target_value",
+                "micro_split_id",
+                "macro_split_id",
+            ],
+        ) or "none"
         task_family = stub_intent.task_family
         primary_metric_key = stub_intent.primary_metric_key
         preferred_metrics = stub_intent.preferred_metrics
@@ -219,6 +256,7 @@ class StubPlanner(Planner):
         base_prompt = (
             f"Task goal:\n{goal}\n\n"
             f"Constraints:\n{constraints_block}\n\n"
+            f"Evaluation contract:\n{evaluation_contract_block}\n\n"
             f"Inferred task intent:\n{intent_block}\n\n"
             f"Retrieved context:\n{context_block}\n\n"
             f"Workspace snapshot:\n{workspace_snapshot_block}\n\n"
@@ -232,6 +270,9 @@ class StubPlanner(Planner):
             "A train-subset overfit check can only be a diagnostic and cannot satisfy the task's acceptance metric.\n"
             "Any metrics artifact used to pass the task must state the evaluation split explicitly.\n"
             "For any new training or smoke-test script, write structured metrics to metrics.json with canonical keys like train_accuracy, eval_accuracy, test_accuracy, loss, threshold_met, and split_integrity_passed.\n"
+            "If runtime provides OPENIN_BUDGET_TIER or OPENIN_MAX_* variables, treat them as hard limits rather than soft hints.\n"
+            "Any runtime-budgeted script must write budget_tier, budget_respected, effective_train_seconds, warmup_seconds, max_effective_train_seconds, max_epochs, max_steps, epochs_trained, and train_steps_completed into the metrics artifact.\n"
+            "Count effective_train_seconds only after import/setup/warmup and stop cleanly once a budget limit is reached.\n"
             "Markdown metrics are optional and secondary.\n"
             "If the task requires actual model training, plan it as an explicit shell command step rather than running it inside Codex.\n"
             "Use experiment history to avoid repeating already failed strategies.\n"
@@ -349,6 +390,8 @@ class StubPlanner(Planner):
                 "Running `python run_task.py --preflight --metrics-path preflight_metrics.json` must only validate dataset parsing, split construction, and a minimal executable smoke path before the real baseline.\n"
                 "Running `python run_task.py --metrics-path metrics.json` must execute the minimal training/evaluation flow required by the task.\n"
                 "The script must write structured metrics to JSON and keep evaluation disjoint from training.\n"
+                "The script must strictly respect `OPENIN_BUDGET_TIER`, `OPENIN_MAX_EFFECTIVE_TRAIN_SECONDS`, `OPENIN_MAX_EPOCHS`, and `OPENIN_MAX_STEPS` when those variables are present.\n"
+                "Both `preflight_metrics.json` and `metrics.json` must include `budget_tier`, `budget_respected`, `effective_train_seconds`, `warmup_seconds`, `max_effective_train_seconds`, `max_epochs`, `max_steps`, `epochs_trained`, and `train_steps_completed` whenever the runtime budget variables are supplied.\n"
                 "When checking overlap across different annotation json files, compare stable image identity such as `file_name` or normalized image path rather than raw COCO image ids alone.\n"
                 "Write `task_family`, `primary_metric_key`, and `evaluation_split` into `metrics.json`.\n"
                 "Codex may run only short diagnostic commands while preparing the script; do not run the full baseline training inside the Codex step.\n"

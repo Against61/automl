@@ -85,6 +85,10 @@ class VerificationFlowService:
             if isinstance(verification.get("latest_hyperparameters"), dict)
             else {}
         )
+        final_metric = verification.get("final_metric") if isinstance(verification.get("final_metric"), dict) else {}
+        budget_tier = verification.get("budget_tier") if isinstance(verification.get("budget_tier"), dict) else {}
+        proxy_metric = verification.get("proxy_metric") if isinstance(verification.get("proxy_metric"), dict) else {}
+        search_metric = verification.get("search_metric") if isinstance(verification.get("search_metric"), dict) else {}
         quality_gate = verification.get("quality_gate") if isinstance(verification.get("quality_gate"), dict) else {}
         improvement_strategy = self.planning_context_service.compact_strategy_summary(
             verification.get("improvement_strategy")
@@ -101,6 +105,10 @@ class VerificationFlowService:
             "quality_status": str(quality_gate.get("status") or ""),
             "quality_reason": str(quality_gate.get("reason") or ""),
             "metrics": metrics,
+            "final_metric": final_metric,
+            "budget_tier": budget_tier,
+            "proxy_metric": proxy_metric,
+            "search_metric": search_metric,
             "hyperparameters": latest_hyperparameters,
             "skill_paths": selected_skill_paths,
             "chosen_intervention_id": (
@@ -137,6 +145,10 @@ class VerificationFlowService:
             quality_status=str(payload["quality_status"]),
             quality_reason=str(payload["quality_reason"]),
             metrics=dict(payload["metrics"]),
+            final_metric=dict(payload.get("final_metric") or {}),
+            budget_tier=dict(payload.get("budget_tier") or {}),
+            proxy_metric=dict(payload.get("proxy_metric") or {}),
+            search_metric=dict(payload.get("search_metric") or {}),
             hyperparameters=dict(payload["hyperparameters"]),
             strategy=payload.get("strategy"),
             skill_paths=list(payload["skill_paths"]),

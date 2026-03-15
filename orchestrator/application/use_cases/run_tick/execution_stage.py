@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 from orchestrator.application.services.ralph_service import RalphScenarioService
+from orchestrator.application.services.budget_tier_service import BudgetTierService
 from orchestrator.application.services.workspace_snapshot_service import WorkspaceSnapshotService
 from orchestrator.application.use_cases.run_tick.execution_guards import ExecutionGuardService
 from orchestrator.config import Settings
@@ -25,6 +26,7 @@ class RunExecutionStage:
         policy_engine: PolicyEngine,
         codex_runner: CodexRunner,
         execution_guard_service: ExecutionGuardService,
+        budget_tier_service: BudgetTierService,
         workspace_snapshot_service: WorkspaceSnapshotService,
         ralph_service: RalphScenarioService,
         set_status: Callable[[str, RunStatus, str | None, RunRecord | None], Awaitable[None]],
@@ -37,6 +39,7 @@ class RunExecutionStage:
         self.policy_engine = policy_engine
         self.codex_runner = codex_runner
         self.execution_guard_service = execution_guard_service
+        self.budget_tier_service = budget_tier_service
         self.workspace_snapshot_service = workspace_snapshot_service
         self.ralph_service = ralph_service
         self.set_status = set_status
@@ -68,6 +71,25 @@ class RunExecutionStage:
                 await self.finalize_cancelled(run_id)
                 return "return"
             step = steps[idx]
+            step, budget_tier = self.budget_tier_service.apply_to_step(
+                run=current,
+                task=task,
+                plan=plan,
+                step=step,
+                step_index=idx,
+            )
+            if budget_tier:
+                await self.bus.publish_internal(
+                    "run.budget_tier_selected",
+                    {
+                        "run_id": run_id,
+                        "step_id": step.id,
+                        "tier": budget_tier["name"],
+                        "max_effective_train_seconds": budget_tier["max_effective_train_seconds"],
+                        "max_epochs": budget_tier.get("max_epochs"),
+                        "max_steps": budget_tier.get("max_steps"),
+                    },
+                )
             decisions = self.policy_engine.evaluate_step(step, workspace_path)
             denied = any(d.decision == "DENY" for d in decisions)
             requires_approval = any(d.decision == "REQUIRE_APPROVAL" for d in decisions)
@@ -189,6 +211,17 @@ class RunExecutionStage:
                 workspace_path=workspace_path,
                 result=result,
             )
+            budget_contract_reason = self.execution_guard_service.budget_contract_violation_reason(
+                workspace_path=workspace_path,
+                step=step,
+                result=result,
+            )
+            if budget_contract_reason:
+                if plan_contract_ok:
+                    plan_contract_ok = False
+                    plan_contract_reason = budget_contract_reason
+                else:
+                    plan_contract_reason = f"{plan_contract_reason}; {budget_contract_reason}"
             if not plan_contract_ok and result.status == "completed":
                 result_summary = f"{result.summary}; plan contract check failed: {plan_contract_reason}"
             else:

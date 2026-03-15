@@ -260,6 +260,49 @@ async def test_verifier_marks_metric_intent_drift_when_reported_primary_metric_c
     assert result.metrics["metric_intent_drift_detected"] is True
 
 
+@pytest.mark.asyncio
+async def test_verifier_prefers_evaluation_contract_over_textual_intent_drift(tmp_path: Path):
+    verifier = _make_verifier(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "metrics.json").write_text(
+        json.dumps(
+            {
+                "task_family": "segmentation",
+                "primary_metric_key": "iou",
+                "eval_mean_iou": 0.62,
+            }
+        ),
+        encoding="utf-8",
+    )
+    task = {
+        "goal": "Train classification model on coco dataset",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 95%"]),
+        "evaluation_contract_json": json.dumps(
+            {
+                "task_family": "segmentation",
+                "primary_metric_key": "iou",
+                "primary_direction": "max",
+                "primary_scale": "ratio",
+                "proxy_metric_kind": "micro_loss",
+                "proxy_direction": "min",
+                "target_value": 0.95,
+                "micro_split_id": "micro/frozen/v1",
+                "macro_split_id": "validation/main",
+                "min_effect_size": 0.01,
+                "budget_tiers": [],
+            }
+        ),
+    }
+
+    result = await verifier.run(workspace, task=task)
+
+    assert result.details["evaluation_contract"]["primary_metric_key"] == "iou"
+    assert result.details["intent_validation"]["status"] == "passed"
+    assert result.details["intent_validation"]["expected_primary_metric_key"] == "iou"
+    assert result.metrics["metric_intent_drift_detected"] is False
+
+
 def test_read_workspace_metrics_detects_split_leakage_from_report_text(tmp_path: Path):
     verifier = _make_verifier(tmp_path)
     workspace = tmp_path / "workspace"

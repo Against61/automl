@@ -8,6 +8,10 @@ from uuid import uuid4
 import pytest
 
 from orchestrator.application.services.plan_contract_service import PlanContractService
+from orchestrator.application.services.evaluation_contract_service import EvaluationContractService
+from orchestrator.application.services.proxy_metric_service import ProxyMetricService
+from orchestrator.application.services.proxy_continuation_service import ProxyContinuationService
+from orchestrator.application.services.budget_tier_service import BudgetTierService
 from orchestrator.application.services.improvement_strategy_service import ImprovementStrategyService
 from orchestrator.application.services.metric_interpretation_service import MetricInterpretation
 from orchestrator.application.services.prompt_content_service import PromptContentService
@@ -15,12 +19,15 @@ from orchestrator.application.services.quality_gate_service import QualityGateSe
 from orchestrator.application.services.recovery_service import MissingFileRecoveryService
 from orchestrator.application.services.task_intent_service import TaskIntentService
 from orchestrator.application.services.workspace_snapshot_service import WorkspaceSnapshotService
+from orchestrator.application.use_cases.run_tick.execution_guards import ExecutionGuardService
 from orchestrator.application.use_cases.run_tick.hyperparameters import HyperparameterService
+from orchestrator.application.use_cases.run_tick.planning_context import PlanningContextService
 from orchestrator.application.use_cases.process_run_tick import ProcessRunTickUseCase
 from orchestrator.persistence.db import Database, normalize_verification_payload
 from orchestrator.execution.verifier import VerificationResult
 from orchestrator.persistence.schemas import (
     ArtifactKind,
+    PlannerPlan,
     PlannerStep,
     Priority,
     StepOperation,
@@ -50,6 +57,314 @@ def test_plan_contract_service_passes_when_artifact_exists(tmp_path: Path):
     passed, reason = service.evaluate(step=step, workspace_path=tmp_path, result=Result())
     assert passed is True
     assert "passed" in reason
+
+
+def test_evaluation_contract_service_builds_and_roundtrips_from_explicit_requirement(tmp_path: Path) -> None:
+    service = EvaluationContractService()
+
+    contract = service.build_from_payload(
+        goal="Train a segmentation baseline",
+        constraints=["RALPH_REQUIRED_METRIC: Dice >= 97%"],
+        workspace_path=tmp_path,
+    )
+
+    assert contract.task_family == "segmentation"
+    assert contract.primary_metric_key == "dice"
+    assert contract.primary_direction == "max"
+    assert contract.primary_scale == "percent"
+    assert contract.proxy_metric_kind == "micro_loss"
+
+    serialized = service.serialize(contract)
+    restored = service.deserialize(serialized)
+
+    assert restored == contract
+
+
+def test_proxy_metric_service_builds_micro_loss_and_proxy_gain(tmp_path: Path) -> None:
+    service = ProxyMetricService()
+    task = {
+        "goal": "Train segmentation baseline",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: mean_iou >= 0.6"]),
+        "evaluation_contract_json": json.dumps(
+            {
+                "task_family": "segmentation",
+                "primary_metric_key": "mean_iou",
+                "primary_direction": "max",
+                "primary_scale": "ratio",
+                "proxy_metric_kind": "micro_loss",
+                "proxy_direction": "min",
+                "target_value": 0.6,
+                "micro_split_id": "micro/frozen/v1",
+                "macro_split_id": "validation/main",
+                "min_effect_size": 0.01,
+                "budget_tiers": [],
+            }
+        ),
+    }
+
+    proxy_metric = service.build_proxy_metric(
+        task=task,
+        metrics={"val_loss": 0.8, "effective_train_seconds": 40},
+        experiment_history=[{"proxy_metric": {"value": 1.0}}],
+    )
+
+    assert proxy_metric is not None
+    assert proxy_metric["kind"] == "micro_loss"
+    assert proxy_metric["metric_key"] == "val_loss"
+    assert proxy_metric["value"] == pytest.approx(0.8)
+    assert proxy_metric["baseline_value"] == pytest.approx(1.0)
+    assert proxy_metric["proxy_gain"] == pytest.approx(0.2, rel=1e-6)
+    assert proxy_metric["effective_train_seconds"] == pytest.approx(40.0)
+    assert proxy_metric["gain_per_budget"] == pytest.approx(0.005, rel=1e-6)
+
+
+def test_budget_tier_service_prefixes_training_commands_by_explicit_run_tier(tmp_path: Path) -> None:
+    service = BudgetTierService()
+    run = type(
+        "Run",
+        (),
+        {
+            "budget_tier": "micro",
+            "execution_cycle": 3,
+            "evaluation_contract_json": {
+                "task_family": "segmentation",
+                "primary_metric_key": "mean_iou",
+                "primary_direction": "max",
+                "primary_scale": "ratio",
+                "proxy_metric_kind": "micro_loss",
+                "proxy_direction": "min",
+                "target_value": 0.6,
+                "micro_split_id": "micro/frozen/v1",
+                "macro_split_id": "validation/main",
+                "min_effect_size": 0.01,
+                "budget_tiers": [
+                    {"name": "smoke", "max_effective_train_seconds": 15, "max_epochs": 1, "max_steps": 2, "requires_real_dataset": True},
+                    {"name": "micro", "max_effective_train_seconds": 90, "max_epochs": 2, "max_steps": 64, "requires_real_dataset": True},
+                    {"name": "short", "max_effective_train_seconds": 300, "max_epochs": 5, "max_steps": 256, "requires_real_dataset": True},
+                    {"name": "full", "max_effective_train_seconds": 1800, "max_epochs": None, "max_steps": None, "requires_real_dataset": True},
+                ],
+            },
+        },
+    )()
+    task = {"goal": "Train segmentation baseline", "constraints_json": "[]"}
+    plan = PlannerPlan(
+        version="1.0",
+        summary="training plan",
+        steps=[
+            {
+                "id": "train",
+                "title": "run training",
+                "action": "shell",
+                "step_intent": "run_training",
+                "command": "python run_task.py",
+                "risk_level": "low",
+            }
+        ],
+    )
+    step = plan.steps[0]
+
+    effective_step, tier = service.apply_to_step(
+        run=run,
+        task=task,
+        plan=plan,
+        step=step,
+        step_index=0,
+    )
+
+    assert tier is not None
+    assert tier["name"] == "micro"
+    assert effective_step.command is not None
+    assert "OPENIN_BUDGET_TIER=micro" in effective_step.command
+    assert "OPENIN_MAX_EFFECTIVE_TRAIN_SECONDS=90" in effective_step.command
+
+
+def test_budget_tier_service_prefixes_preflight_shell_step_with_smoke_tier(tmp_path: Path) -> None:
+    service = BudgetTierService()
+    run = type(
+        "Run",
+        (),
+        {
+            "budget_tier": "short",
+            "execution_cycle": 5,
+            "evaluation_contract_json": {
+                "task_family": "classification",
+                "primary_metric_key": "accuracy",
+                "primary_direction": "max",
+                "primary_scale": "ratio",
+                "proxy_metric_kind": "micro_loss",
+                "proxy_direction": "min",
+                "target_value": 0.9,
+                "micro_split_id": "micro/frozen/v1",
+                "macro_split_id": "validation/main",
+                "min_effect_size": 0.01,
+                "budget_tiers": [
+                    {"name": "smoke", "max_effective_train_seconds": 15, "max_epochs": 1, "max_steps": 2, "requires_real_dataset": False},
+                    {"name": "micro", "max_effective_train_seconds": 90, "max_epochs": 2, "max_steps": 64, "requires_real_dataset": False},
+                    {"name": "short", "max_effective_train_seconds": 300, "max_epochs": 5, "max_steps": 256, "requires_real_dataset": False},
+                    {"name": "full", "max_effective_train_seconds": 1800, "max_epochs": None, "max_steps": None, "requires_real_dataset": False},
+                ],
+            },
+        },
+    )()
+    task = {"goal": "Train classifier", "constraints_json": "[]"}
+    plan = PlannerPlan(
+        version="1.0",
+        summary="training plan",
+        steps=[
+            {
+                "id": "preflight",
+                "title": "Run preflight validation",
+                "action": "shell",
+                "step_intent": "general",
+                "command": "python run_task.py --preflight --metrics-path preflight_metrics.json",
+                "risk_level": "low",
+            }
+        ],
+    )
+
+    effective_step, tier = service.apply_to_step(
+        run=run,
+        task=task,
+        plan=plan,
+        step=plan.steps[0],
+        step_index=0,
+    )
+
+    assert tier is not None
+    assert tier["name"] == "smoke"
+    assert "OPENIN_BUDGET_TIER=smoke" in (effective_step.command or "")
+
+
+def test_proxy_continuation_service_promotes_first_micro_candidate_without_history() -> None:
+    service = ProxyContinuationService()
+    run = type(
+        "Run",
+        (),
+        {
+            "budget_tier": "micro",
+            "execution_cycle": 0,
+            "evaluation_contract_json": {
+                "task_family": "segmentation",
+                "primary_metric_key": "mean_iou",
+                "primary_direction": "max",
+                "primary_scale": "ratio",
+                "proxy_metric_kind": "micro_loss",
+                "proxy_direction": "min",
+                "target_value": 0.6,
+                "micro_split_id": "micro/frozen/v1",
+                "macro_split_id": "validation/main",
+                "min_effect_size": 0.01,
+                "budget_tiers": [
+                    {"name": "smoke", "max_effective_train_seconds": 15, "max_epochs": 1, "max_steps": 2, "requires_real_dataset": True},
+                    {"name": "micro", "max_effective_train_seconds": 90, "max_epochs": 2, "max_steps": 64, "requires_real_dataset": True},
+                    {"name": "short", "max_effective_train_seconds": 300, "max_epochs": 5, "max_steps": 256, "requires_real_dataset": True},
+                    {"name": "full", "max_effective_train_seconds": 1800, "max_epochs": None, "max_steps": None, "requires_real_dataset": True},
+                ],
+            },
+        },
+    )()
+    task = {"goal": "Train segmentation baseline", "constraints_json": "[]"}
+
+    decision = service.decide(
+        run=run,
+        task=task,
+        proxy_metric={"kind": "micro_loss", "metric_key": "val_loss", "value": 0.82, "history_count": 0},
+    )
+
+    assert decision is not None
+    assert decision["decision"] == "promote"
+    assert decision["from_tier"] == "micro"
+    assert decision["to_tier"] == "short"
+
+
+def test_proxy_continuation_service_discards_candidate_when_proxy_gain_below_threshold() -> None:
+    service = ProxyContinuationService()
+    run = type(
+        "Run",
+        (),
+        {
+            "budget_tier": "short",
+            "execution_cycle": 1,
+            "evaluation_contract_json": {
+                "task_family": "segmentation",
+                "primary_metric_key": "mean_iou",
+                "primary_direction": "max",
+                "primary_scale": "ratio",
+                "proxy_metric_kind": "micro_loss",
+                "proxy_direction": "min",
+                "target_value": 0.6,
+                "micro_split_id": "micro/frozen/v1",
+                "macro_split_id": "validation/main",
+                "min_effect_size": 0.05,
+                "budget_tiers": [
+                    {"name": "smoke", "max_effective_train_seconds": 15, "max_epochs": 1, "max_steps": 2, "requires_real_dataset": True},
+                    {"name": "micro", "max_effective_train_seconds": 90, "max_epochs": 2, "max_steps": 64, "requires_real_dataset": True},
+                    {"name": "short", "max_effective_train_seconds": 300, "max_epochs": 5, "max_steps": 256, "requires_real_dataset": True},
+                    {"name": "full", "max_effective_train_seconds": 1800, "max_epochs": None, "max_steps": None, "requires_real_dataset": True},
+                ],
+            },
+        },
+    )()
+    task = {"goal": "Train segmentation baseline", "constraints_json": "[]"}
+
+    decision = service.decide(
+        run=run,
+        task=task,
+        proxy_metric={"kind": "micro_loss", "metric_key": "val_loss", "value": 0.79, "proxy_gain": 0.02, "history_count": 2},
+    )
+
+    assert decision is not None
+    assert decision["decision"] == "discard"
+    assert decision["from_tier"] == "short"
+    assert decision["to_tier"] == "micro"
+
+
+def test_execution_guard_budget_contract_violation_reason_detects_missing_runtime_budget_fields(tmp_path: Path) -> None:
+    metrics_path = tmp_path / "metrics.json"
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "budget_tier": "micro",
+                "budget_respected": True,
+                "max_effective_train_seconds": 90,
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ExecutionGuardService(
+        db=None,  # type: ignore[arg-type]
+        auto_approve_in_pilot=False,
+        plan_contract_service=PlanContractService(plan_review_enabled=True),
+        recovery_service=MissingFileRecoveryService(),
+        codex_runner=None,  # type: ignore[arg-type]
+        ralph_service=None,  # type: ignore[arg-type]
+    )
+    step = PlannerStep(
+        id="train",
+        title="Run training",
+        action="shell",
+        step_intent="run_training",
+        command="OPENIN_BUDGET_TIER=micro OPENIN_MAX_EFFECTIVE_TRAIN_SECONDS=90 python run_task.py --metrics-path metrics.json",
+        expected_artifacts=[{"path": "metrics.json", "kind": "metrics", "must_exist": True}],
+        risk_level="low",
+    )
+    result = type(
+        "Result",
+        (),
+        {
+            "status": "completed",
+            "command": step.command,
+        },
+    )()
+
+    reason = service.budget_contract_violation_reason(
+        workspace_path=tmp_path,
+        step=step,
+        result=result,
+    )
+
+    assert reason is not None
+    assert "effective_train_seconds" in reason
 
 
 def test_plan_contract_service_fails_missing_artifact_for_codex_without_git(tmp_path: Path):
@@ -507,6 +822,79 @@ def test_quality_gate_service_percent_requirement_normalizes_ratio_and_percent_m
     assert "failed" in reason_fail
 
 
+@pytest.mark.asyncio
+async def test_quality_gate_service_emits_final_and_search_metric_details(tmp_path: Path) -> None:
+    backlog = RalphBacklogService()
+    quality = QualityGateService(ralph_backlog=backlog)
+    task = {
+        "goal": "Improve classifier quality",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 90%"]),
+    }
+    verification = VerificationResult(
+        status="passed",
+        passed=True,
+        commands=[],
+        metrics={"eval_accuracy": 91.0, "effective_train_seconds": 30},
+    )
+
+    passed, _ = await quality.evaluate(
+        task=task,
+        workspace_path=tmp_path,
+        verification=verification,
+    )
+
+    assert passed is True
+    assert verification.details["final_metric"]["metric_key"] == "accuracy"
+    assert verification.details["final_metric"]["resolved_metric_key"] == "eval_accuracy"
+    assert verification.details["final_metric"]["raw_value"] == pytest.approx(91.0)
+    assert verification.details["final_metric"]["utility"] == pytest.approx(0.91)
+    assert verification.details["search_metric"]["utility"] == pytest.approx(0.91)
+    assert verification.details["search_metric"]["target_utility"] == pytest.approx(0.90)
+    assert verification.details["search_metric"]["effective_train_seconds"] == pytest.approx(30.0)
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_service_tracks_search_metric_progress(tmp_path: Path) -> None:
+    backlog = RalphBacklogService()
+    quality = QualityGateService(ralph_backlog=backlog)
+    task = {
+        "goal": "Improve classifier quality",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 60%"]),
+    }
+    verification = VerificationResult(
+        status="passed",
+        passed=True,
+        commands=[],
+        metrics={"eval_accuracy": 0.55, "effective_train_seconds": 15},
+    )
+
+    passed, _ = await quality.evaluate(
+        task=task,
+        workspace_path=tmp_path,
+        verification=verification,
+    )
+    assert passed is False
+
+    search_metric = quality.attach_search_metric_progress(
+        task=task,
+        workspace_path=tmp_path,
+        verification=verification,
+        experiment_history=[
+            {"metrics": {"eval_accuracy": 0.52}},
+            {"metrics": {"eval_accuracy": 0.54}},
+        ],
+    )
+
+    assert search_metric is not None
+    assert search_metric["utility"] == pytest.approx(0.55)
+    assert search_metric["baseline_utility"] == pytest.approx(0.52)
+    assert search_metric["best_utility_so_far"] == pytest.approx(0.54)
+    assert search_metric["delta_best"] == pytest.approx(0.01)
+    assert search_metric["delta_base"] == pytest.approx(0.03)
+    assert search_metric["gap_closed"] == pytest.approx(0.375)
+    assert search_metric["gain_per_budget"] == pytest.approx((0.55 - 0.54) / 15.0, rel=1e-6)
+
+
 def test_quality_gate_service_prefers_validation_or_test_metric_over_train():
     import asyncio
 
@@ -849,6 +1237,96 @@ async def test_verification_set_keeps_history(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_database_snapshots_evaluation_contract_from_task_to_run(tmp_path: Path) -> None:
+    db = Database(tmp_path / "orchestrator.db")
+    await db.connect()
+    service = EvaluationContractService()
+    event = TaskSubmittedEvent(
+        event_id=uuid4(),
+        event_type="task.submitted",
+        schema_version="1.0",
+        task_id=uuid4(),
+        workspace_id="ws-contract",
+        priority=Priority.normal,
+        payload=TaskPayload(
+            goal="Train a segmentation baseline",
+            constraints=["RALPH_REQUIRED_METRIC: mean_iou >= 0.6"],
+            pdf_scope=[],
+        ),
+    )
+    contract = service.serialize(
+        service.build_from_payload(
+            goal=event.payload.goal,
+            constraints=list(event.payload.constraints),
+            workspace_path=tmp_path / "workspace" / "ws-contract",
+        )
+    )
+
+    await db.upsert_task(event, contract)
+    run_id = await db.create_or_get_run(
+        task_id=str(event.task_id),
+        workspace_id="ws-contract",
+        priority=Priority.normal,
+    )
+    task = await db.get_task(str(event.task_id))
+    run = await db.get_run(run_id)
+
+    assert task is not None
+    assert json.loads(task["evaluation_contract_json"])["primary_metric_key"] == "mean_iou"
+    assert run is not None
+    assert run.evaluation_contract_json is not None
+    assert run.evaluation_contract_json["primary_metric_key"] == "mean_iou"
+
+
+def test_planning_context_build_plan_input_includes_evaluation_contract(tmp_path: Path) -> None:
+    db = Database(tmp_path / "orchestrator.db")
+    service = PlanningContextService(db, experiment_history_context_limit=4)
+    task = {
+        "goal": "Train a segmentation baseline",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: dice >= 97%"]),
+        "pdf_scope_json": "[]",
+        "payload_json": json.dumps({"payload": {"execution_mode": "plan_execute"}}),
+        "evaluation_contract_json": json.dumps(
+            {
+                "task_family": "segmentation",
+                "primary_metric_key": "dice",
+                "primary_direction": "max",
+                "primary_scale": "percent",
+                "proxy_metric_kind": "micro_loss",
+                "proxy_direction": "min",
+                "target_value": 97.0,
+                "micro_split_id": "micro/frozen/v1",
+                "macro_split_id": "validation/main",
+                "min_effect_size": 0.01,
+                "budget_tiers": [],
+            }
+        ),
+    }
+    run = type(
+        "Run",
+        (),
+        {
+            "error_message": None,
+            "evaluation_contract_json": None,
+        },
+    )()
+
+    plan_input = service.build_plan_input(
+        task=task,
+        run=run,
+        workspace_id="ws-contract",
+        contexts=[],
+        workspace_snapshot_summary=None,
+        experiment_history_summary=None,
+        last_failed_step=None,
+        previous_verification=None,
+    )
+
+    assert plan_input.evaluation_contract is not None
+    assert plan_input.evaluation_contract["primary_metric_key"] == "dice"
+
+
+@pytest.mark.asyncio
 async def test_set_plan_resets_next_step_index(tmp_path: Path):
     db = Database(tmp_path / "orchestrator.db")
     await db.connect()
@@ -1113,6 +1591,52 @@ async def test_quality_gate_service_rejects_metric_intent_drift_before_threshold
     assert reason == "quality gate failed: metrics artifact intent does not match inferred task intent"
 
 
+@pytest.mark.asyncio
+async def test_quality_gate_service_uses_evaluation_contract_over_conflicting_text_requirement(tmp_path: Path) -> None:
+    backlog = RalphBacklogService()
+    quality = QualityGateService(ralph_backlog=backlog)
+    task = {
+        "goal": "Train classification model on coco dataset",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 98%"]),
+        "evaluation_contract_json": json.dumps(
+            {
+                "task_family": "segmentation",
+                "primary_metric_key": "iou",
+                "primary_direction": "max",
+                "primary_scale": "ratio",
+                "proxy_metric_kind": "micro_loss",
+                "proxy_direction": "min",
+                "target_value": 0.6,
+                "micro_split_id": "micro/frozen/v1",
+                "macro_split_id": "validation/main",
+                "min_effect_size": 0.01,
+                "budget_tiers": [],
+            }
+        ),
+    }
+    verification = VerificationResult(
+        status="passed",
+        passed=True,
+        commands=[],
+        metrics={
+            "task_family": "segmentation",
+            "primary_metric_key": "iou",
+            "eval_iou": 0.62,
+        },
+    )
+
+    passed, reason = await quality.evaluate(
+        task=task,
+        workspace_path=tmp_path,
+        verification=verification,
+    )
+
+    assert passed is True
+    assert reason == "quality gate passed"
+    assert verification.details["final_metric"]["metric_key"] == "iou"
+    assert verification.details["final_metric"]["target_raw"] == 0.6
+
+
 def test_task_intent_service_infers_detection_family_from_metric_and_text(tmp_path: Path) -> None:
     service = TaskIntentService()
     intent = service.infer(
@@ -1160,6 +1684,54 @@ def test_improvement_strategy_service_uses_same_metric_resolution_as_quality_gat
 
     assert strategy["objective"]["current_value"] == pytest.approx(0.875, rel=1e-6)
     assert strategy["objective"]["gap"] == pytest.approx(0.095, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_improvement_strategy_service_exposes_search_objective(tmp_path: Path) -> None:
+    backlog = RalphBacklogService()
+    quality = QualityGateService(ralph_backlog=backlog)
+    service = ImprovementStrategyService(quality_gate_service=quality)
+
+    task = {
+        "goal": "Improve classifier quality",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 60%"]),
+    }
+    verification = VerificationResult(
+        status="passed",
+        passed=True,
+        commands=[],
+        metrics={"eval_accuracy": 0.55},
+    )
+
+    passed, reason = await quality.evaluate(
+        task=task,
+        workspace_path=tmp_path,
+        verification=verification,
+    )
+    assert passed is False
+    quality.attach_search_metric_progress(
+        task=task,
+        workspace_path=tmp_path,
+        verification=verification,
+        experiment_history=[
+            {"metrics": {"eval_accuracy": 0.52}},
+            {"metrics": {"eval_accuracy": 0.54}},
+        ],
+    )
+
+    strategy = service.build_for_quality_failure(
+        run_id="run-search-metric",
+        task=task,
+        workspace_path=tmp_path,
+        verification=verification,
+        previous_verification=None,
+        quality_reason=reason,
+    )
+
+    assert strategy["search_objective"]["utility"] == pytest.approx(0.55)
+    assert strategy["search_objective"]["target_utility"] == pytest.approx(0.60)
+    assert strategy["search_objective"]["delta_best"] == pytest.approx(0.01)
+    assert strategy["search_objective"]["gap_closed"] == pytest.approx(0.375)
 
 
 def test_improvement_strategy_service_promotes_relevant_skills_and_experiment_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

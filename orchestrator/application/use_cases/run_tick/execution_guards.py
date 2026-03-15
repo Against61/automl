@@ -305,6 +305,73 @@ class ExecutionGuardService:
             return None
         return f"dependency recovery required after training step: {reason}; environment change required before rerun"
 
+    def budget_contract_violation_reason(
+        self,
+        *,
+        workspace_path: Path,
+        step: PlannerStep,
+        result: StepExecutionResult,
+    ) -> str | None:
+        if result.status != "completed":
+            return None
+        if step.action != "shell":
+            return None
+        command = str(result.command or step.command or "").strip()
+        budget_contract = self._budget_contract_from_command(command)
+        if not budget_contract:
+            return None
+        payload = self._budget_metrics_payload(workspace_path=workspace_path, step=step)
+        if payload is None:
+            return "runtime budget contract missing structured metrics artifact"
+
+        expected_tier = str(budget_contract.get("budget_tier") or "").strip().lower()
+        actual_tier = str(payload.get("budget_tier") or "").strip().lower()
+        if expected_tier and actual_tier != expected_tier:
+            return f"metrics budget_tier={actual_tier or 'missing'} does not match runtime tier {expected_tier}"
+
+        if payload.get("budget_respected") is not True:
+            return "metrics declare budget_respected=false or omit the field"
+
+        effective_train_seconds = self._coerce_float(payload.get("effective_train_seconds"))
+        if effective_train_seconds is None:
+            return "metrics omit effective_train_seconds required by runtime budget contract"
+
+        expected_max_seconds = self._coerce_float(budget_contract.get("max_effective_train_seconds"))
+        reported_max_seconds = self._coerce_float(payload.get("max_effective_train_seconds"))
+        if expected_max_seconds is not None:
+            if reported_max_seconds is None:
+                return "metrics omit max_effective_train_seconds required by runtime budget contract"
+            if abs(reported_max_seconds - expected_max_seconds) > 1e-6:
+                return (
+                    f"metrics max_effective_train_seconds={reported_max_seconds:.6g} "
+                    f"does not match runtime contract {expected_max_seconds:.6g}"
+                )
+            if effective_train_seconds - expected_max_seconds > 1e-6:
+                return (
+                    f"effective_train_seconds={effective_train_seconds:.6g} exceeds "
+                    f"runtime budget {expected_max_seconds:.6g}"
+                )
+
+        expected_max_epochs = self._coerce_int(budget_contract.get("max_epochs"))
+        if expected_max_epochs is not None:
+            epochs_trained = self._coerce_int(payload.get("epochs_trained"))
+            if epochs_trained is None:
+                return "metrics omit epochs_trained required by runtime budget contract"
+            if epochs_trained > expected_max_epochs:
+                return f"epochs_trained={epochs_trained} exceeds runtime budget {expected_max_epochs}"
+
+        expected_max_steps = self._coerce_int(budget_contract.get("max_steps"))
+        if expected_max_steps is not None:
+            train_steps_completed = self._coerce_int(
+                payload.get("train_steps_completed", payload.get("training_steps_completed"))
+            )
+            if train_steps_completed is None:
+                return "metrics omit train_steps_completed required by runtime budget contract"
+            if train_steps_completed > expected_max_steps:
+                return f"train_steps_completed={train_steps_completed} exceeds runtime budget {expected_max_steps}"
+
+        return None
+
     def _structured_dependency_issue_reason(self, candidate_paths: list[Path]) -> str | None:
         seen: set[Path] = set()
         for path in candidate_paths:
@@ -350,6 +417,68 @@ class ExecutionGuardService:
         if "required for smoke execution" in lowered or "not installed in this environment" in lowered:
             return error_text
         return None
+
+    def _budget_metrics_payload(self, *, workspace_path: Path, step: PlannerStep) -> dict[str, Any] | None:
+        candidates: list[Path] = []
+        if "preflight" in str(step.command or "").lower() or "preflight" in " ".join(step.commands or []).lower():
+            candidates.append(workspace_path / "preflight_metrics.json")
+        candidates.extend([workspace_path / "metrics.json", workspace_path / "preflight_metrics.json"])
+        for spec in step.expected_artifacts:
+            if spec.kind != ArtifactKind.metrics or not spec.path:
+                continue
+            target = self.resolve_expected_artifact_target(spec.path, workspace_path)
+            if target is not None:
+                candidates.append(target)
+        seen: set[Path] = set()
+        for path in candidates:
+            try:
+                resolved = path.resolve()
+            except OSError:
+                resolved = path
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            payload = self._read_json_mapping(resolved)
+            if payload is not None:
+                return payload
+        return None
+
+    @staticmethod
+    def _budget_contract_from_command(command: str) -> dict[str, Any]:
+        contract: dict[str, Any] = {}
+        if not command:
+            return contract
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = command.split()
+        for token in tokens:
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            if not key.startswith("OPENIN_"):
+                continue
+            normalized = key.removeprefix("OPENIN_").lower()
+            contract[normalized] = value
+        return contract
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        try:
+            if value in {None, ""}:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        try:
+            if value in {None, ""}:
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def extract_python_script_target(step: PlannerStep, workspace_path: Path) -> Path | None:

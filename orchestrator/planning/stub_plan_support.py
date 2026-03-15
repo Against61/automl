@@ -114,10 +114,18 @@ def real_dataset_smoke_required(payload: PlanInput) -> bool:
 
 
 def resolve_stub_plan_intent(payload: PlanInput, inferred_intent: TaskIntent) -> StubPlanIntent:
-    resolved_task_family = task_family(payload) or inferred_intent.task_family
-    resolved_primary_metric_key = primary_metric_key(payload) or inferred_intent.primary_metric_key
+    contract = payload.evaluation_contract if isinstance(payload.evaluation_contract, dict) else {}
+    contract_task_family = str(contract.get("task_family") or "").strip() or None
+    contract_primary_metric_key = str(contract.get("primary_metric_key") or "").strip() or None
+    resolved_task_family = contract_task_family or task_family(payload) or inferred_intent.task_family
+    resolved_primary_metric_key = contract_primary_metric_key or primary_metric_key(payload) or inferred_intent.primary_metric_key
     resolved_preferred_metrics = preferred_metrics(payload) or inferred_intent.preferred_metrics
     resolved_real_dataset_smoke_required = real_dataset_smoke_required(payload)
+    if not resolved_real_dataset_smoke_required:
+        for tier in contract.get("budget_tiers") or []:
+            if isinstance(tier, dict) and tier.get("requires_real_dataset"):
+                resolved_real_dataset_smoke_required = True
+                break
     if not resolved_real_dataset_smoke_required:
         resolved_real_dataset_smoke_required = inferred_intent.requires_real_dataset_smoke
     raw_required = required_metric_key(payload.constraints)

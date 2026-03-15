@@ -17,11 +17,15 @@ from orchestrator.application.use_cases.run_tick import (
     StepioRecoveryService,
     VerificationFlowService,
 )
+from orchestrator.application.services.evaluation_contract_service import EvaluationContractService
 from orchestrator.application.services.plan_contract_service import PlanContractService
 from orchestrator.application.services.metric_interpretation_service import CodexMetricInterpreter
 from orchestrator.application.services.quality_gate_service import QualityGateService
 from orchestrator.application.services.ralph_service import RalphScenarioService
 from orchestrator.application.services.improvement_strategy_service import ImprovementStrategyService
+from orchestrator.application.services.proxy_metric_service import ProxyMetricService
+from orchestrator.application.services.proxy_continuation_service import ProxyContinuationService
+from orchestrator.application.services.budget_tier_service import BudgetTierService
 from orchestrator.application.services.recovery_service import MissingFileRecoveryService
 from orchestrator.application.services.workspace_snapshot_service import WorkspaceSnapshotService
 from orchestrator.execution.artifacts import ArtifactPublisher
@@ -61,6 +65,7 @@ class ProcessRunTickUseCase:
         )
         recovery_service = MissingFileRecoveryService()
         hyperparameter_service = HyperparameterService(db)
+        evaluation_contract_service = EvaluationContractService()
         self.planning_context_service = PlanningContextService(db, settings.experiment_history_context_limit)
         self.coordinator_support_service = RunCoordinatorSupportService(
             settings=settings,
@@ -69,7 +74,9 @@ class ProcessRunTickUseCase:
             codex_runner=codex_runner,
             artifact_publisher=artifact_publisher,
             planning_context_service=self.planning_context_service,
+            evaluation_contract_service=evaluation_contract_service,
         )
+        self.evaluation_contract_service = evaluation_contract_service
         verification_flow_service = VerificationFlowService(
             db=db,
             runs_root=settings.runs_root,
@@ -82,6 +89,9 @@ class ProcessRunTickUseCase:
             metric_interpreter=CodexMetricInterpreter(settings),
         )
         improvement_strategy_service = ImprovementStrategyService(quality_gate_service=quality_gate_service)
+        proxy_metric_service = ProxyMetricService()
+        budget_tier_service = BudgetTierService()
+        proxy_continuation_service = ProxyContinuationService(budget_tier_service=budget_tier_service)
         workspace_snapshot_service = WorkspaceSnapshotService()
         ralph_service = RalphScenarioService(
             settings=settings,
@@ -132,6 +142,7 @@ class ProcessRunTickUseCase:
             policy_engine=policy_engine,
             codex_runner=codex_runner,
             execution_guard_service=execution_guard_service,
+            budget_tier_service=budget_tier_service,
             workspace_snapshot_service=workspace_snapshot_service,
             ralph_service=ralph_service,
             set_status=self.coordinator_support_service.set_status,
@@ -148,6 +159,9 @@ class ProcessRunTickUseCase:
             verification_flow_service=verification_flow_service,
             execution_guard_service=execution_guard_service,
             improvement_strategy_service=improvement_strategy_service,
+            proxy_metric_service=proxy_metric_service,
+            budget_tier_service=budget_tier_service,
+            proxy_continuation_service=proxy_continuation_service,
             ralph_service=ralph_service,
             set_status=self.coordinator_support_service.set_status,
             schedule_replan=self.coordinator_support_service.schedule_replan,
@@ -188,6 +202,23 @@ class ProcessRunTickUseCase:
             if not task:
                 await self.coordinator_support_service.set_status(run_id, RunStatus.FAILED, "task not found")
                 continue
+            if self.evaluation_contract_service.load_from_task(task) is None:
+                workspace_path = self.coordinator_support_service.workspace_dir(run.workspace_id)
+                evaluation_contract = self.evaluation_contract_service.serialize(
+                    self.evaluation_contract_service.build_from_task(
+                        task,
+                        workspace_path=workspace_path,
+                    )
+                )
+                await self.db.set_task_evaluation_contract(run.task_id, evaluation_contract)
+                task = await self.db.get_task(run.task_id) or task
+            if run.evaluation_contract_json is None:
+                task_contract = self.planning_context_service.extract_evaluation_contract(task)
+                if task_contract is not None:
+                    await self.db.set_run_evaluation_contract(run_id, task_contract)
+                    refreshed_run = await self.db.get_run(run_id)
+                    if refreshed_run is not None:
+                        run = refreshed_run
 
             task_signature = self.planning_context_service.build_task_signature_from_record(task)
             if task_signature is not None and run.goal_signature != task_signature:

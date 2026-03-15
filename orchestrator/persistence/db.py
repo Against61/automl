@@ -213,8 +213,12 @@ class Database:
     ) -> bool:
         return await self.events.record_stream_event(event_id, stream, event_type, payload_json, run_id)
 
-    async def upsert_task(self, event: TaskSubmittedEvent) -> None:
-        await self.tasks.upsert_task(event)
+    async def upsert_task(
+        self,
+        event: TaskSubmittedEvent,
+        evaluation_contract_json: dict[str, Any] | None = None,
+    ) -> None:
+        await self.tasks.upsert_task(event, evaluation_contract_json)
 
     async def create_or_get_run(
         self,
@@ -228,8 +232,17 @@ class Database:
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
         return await self.tasks.get_task(task_id)
 
+    async def set_task_evaluation_contract(self, task_id: str, evaluation_contract_json: dict[str, Any]) -> None:
+        await self.tasks.set_evaluation_contract(task_id, evaluation_contract_json)
+
     async def get_run(self, run_id: str) -> RunRecord | None:
         return await self.runs.get_run(run_id)
+
+    async def set_run_evaluation_contract(self, run_id: str, evaluation_contract_json: dict[str, Any]) -> None:
+        await self.runs.set_evaluation_contract(run_id, evaluation_contract_json)
+
+    async def set_run_budget_tier(self, run_id: str, budget_tier: str) -> None:
+        await self.runs.set_budget_tier(run_id, budget_tier)
 
     async def list_runs(
         self,
@@ -336,6 +349,10 @@ class Database:
         quality_status: str | None,
         quality_reason: str | None,
         metrics: dict[str, Any],
+        final_metric: dict[str, Any] | None,
+        budget_tier: dict[str, Any] | None,
+        proxy_metric: dict[str, Any] | None,
+        search_metric: dict[str, Any] | None,
         hyperparameters: dict[str, Any],
         strategy: dict[str, Any] | None,
         skill_paths: list[str],
@@ -351,6 +368,10 @@ class Database:
             quality_status=quality_status,
             quality_reason=quality_reason,
             metrics=metrics,
+            final_metric=final_metric,
+            budget_tier=budget_tier,
+            proxy_metric=proxy_metric,
+            search_metric=search_metric,
             hyperparameters=hyperparameters,
             strategy=strategy,
             skill_paths=skill_paths,

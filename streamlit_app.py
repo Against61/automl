@@ -927,6 +927,32 @@ def _render_improvement_strategy(run_payload: dict[str, Any]) -> None:
     experiment_attempts = history.get("experiment_attempts")
     if isinstance(experiment_attempts, list) and experiment_attempts:
         with st.expander("Recent Experiment Attempts", expanded=False):
+            rows: list[dict[str, Any]] = []
+            for item in experiment_attempts[-6:]:
+                if not isinstance(item, dict):
+                    continue
+                final_metric = item.get("final_metric") if isinstance(item.get("final_metric"), dict) else {}
+                budget_tier = item.get("budget_tier") if isinstance(item.get("budget_tier"), dict) else {}
+                proxy_metric = item.get("proxy_metric") if isinstance(item.get("proxy_metric"), dict) else {}
+                search_metric = item.get("search_metric") if isinstance(item.get("search_metric"), dict) else {}
+                rows.append(
+                    {
+                        "attempt": item.get("attempt"),
+                        "tier": budget_tier.get("name"),
+                        "quality": item.get("quality_status"),
+                        "metric": final_metric.get("metric_key"),
+                        "proxy_metric": proxy_metric.get("metric_key") or proxy_metric.get("kind"),
+                        "proxy_gain": proxy_metric.get("proxy_gain"),
+                        "proxy_gain_per_budget": proxy_metric.get("gain_per_budget"),
+                        "utility": search_metric.get("utility"),
+                        "utility_gain_per_budget": search_metric.get("gain_per_budget"),
+                        "delta_best": search_metric.get("delta_best"),
+                        "gap_closed": search_metric.get("gap_closed"),
+                        "created_at": item.get("created_at"),
+                    }
+                )
+            if rows:
+                st.dataframe(rows, use_container_width=True)
             st.json(experiment_attempts[-6:])
 
     directives = strategy.get("planner_directives")
@@ -1039,6 +1065,107 @@ def _render_metric_resolution(run_payload: dict[str, Any]) -> None:
     reason = str(resolution.get("reason") or "").strip()
     if reason:
         st.caption(reason)
+
+
+def _render_search_metric(run_payload: dict[str, Any]) -> None:
+    verification = _verification_for_display(run_payload)
+    if not isinstance(verification, dict):
+        return
+    final_metric = verification.get("final_metric")
+    search_metric = verification.get("search_metric")
+    if not isinstance(final_metric, dict) and not isinstance(search_metric, dict):
+        return
+
+    final_metric = final_metric if isinstance(final_metric, dict) else {}
+    search_metric = search_metric if isinstance(search_metric, dict) else {}
+
+    st.subheader("Search Metric")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Final Metric", str(final_metric.get("metric_key") or "n/a"))
+    utility = search_metric.get("utility")
+    c2.metric("Utility", _format_metric_display(utility, None) if isinstance(utility, (int, float)) else "n/a")
+    delta_best = search_metric.get("delta_best")
+    c3.metric("Delta Best", _format_metric_display(delta_best, None) if isinstance(delta_best, (int, float)) else "n/a")
+    gap_closed = search_metric.get("gap_closed")
+    c4.metric("Gap Closed", _format_metric_display(gap_closed, None) if isinstance(gap_closed, (int, float)) else "n/a")
+
+    baseline = search_metric.get("baseline_utility")
+    best = search_metric.get("best_utility_so_far")
+    target_utility = search_metric.get("target_utility")
+    gain_per_budget = search_metric.get("gain_per_budget")
+    effective_train_seconds = search_metric.get("effective_train_seconds")
+    if any(isinstance(value, (int, float)) for value in (baseline, best, target_utility)):
+        st.caption(
+            " | ".join(
+                [
+                    f"baseline={_format_metric_display(baseline, None) if isinstance(baseline, (int, float)) else 'n/a'}",
+                    f"best={_format_metric_display(best, None) if isinstance(best, (int, float)) else 'n/a'}",
+                    f"target={_format_metric_display(target_utility, None) if isinstance(target_utility, (int, float)) else 'n/a'}",
+                ]
+            )
+        )
+    if any(isinstance(value, (int, float)) for value in (gain_per_budget, effective_train_seconds)):
+        st.caption(
+            " | ".join(
+                [
+                    f"gain_per_budget={_format_metric_display(gain_per_budget, None) if isinstance(gain_per_budget, (int, float)) else 'n/a'}",
+                    f"effective_train_seconds={_format_metric_display(effective_train_seconds, None) if isinstance(effective_train_seconds, (int, float)) else 'n/a'}",
+                ]
+            )
+        )
+
+
+def _render_proxy_metric(run_payload: dict[str, Any]) -> None:
+    verification = _verification_for_display(run_payload)
+    if not isinstance(verification, dict):
+        return
+    proxy_metric = verification.get("proxy_metric") if isinstance(verification.get("proxy_metric"), dict) else {}
+    budget_tier = verification.get("budget_tier") if isinstance(verification.get("budget_tier"), dict) else {}
+    current_tier = str(budget_tier.get("name") or run_payload.get("budget_tier") or "").strip()
+    if not proxy_metric and not current_tier:
+        return
+
+    st.subheader("Proxy Metric")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Budget Tier", current_tier or "n/a")
+    c2.metric("Proxy Metric", str(proxy_metric.get("metric_key") or proxy_metric.get("kind") or "n/a"))
+    proxy_value = proxy_metric.get("value")
+    c3.metric("Proxy Value", _format_metric_display(proxy_value, None) if isinstance(proxy_value, (int, float)) else "n/a")
+    proxy_gain = proxy_metric.get("proxy_gain")
+    c4.metric("Proxy Gain", _format_metric_display(proxy_gain, None) if isinstance(proxy_gain, (int, float)) else "n/a")
+
+    baseline_value = proxy_metric.get("baseline_value")
+    best_value = proxy_metric.get("best_value_so_far")
+    history_count = proxy_metric.get("history_count")
+    gain_per_budget = proxy_metric.get("gain_per_budget")
+    effective_train_seconds = proxy_metric.get("effective_train_seconds")
+    if any(isinstance(value, (int, float)) for value in (baseline_value, best_value, history_count, gain_per_budget, effective_train_seconds)):
+        st.caption(
+            " | ".join(
+                [
+                    f"baseline={_format_metric_display(baseline_value, None) if isinstance(baseline_value, (int, float)) else 'n/a'}",
+                    f"best={_format_metric_display(best_value, None) if isinstance(best_value, (int, float)) else 'n/a'}",
+                    f"history={history_count if isinstance(history_count, int) else 'n/a'}",
+                    f"gain_per_budget={_format_metric_display(gain_per_budget, None) if isinstance(gain_per_budget, (int, float)) else 'n/a'}",
+                    f"effective_train_seconds={_format_metric_display(effective_train_seconds, None) if isinstance(effective_train_seconds, (int, float)) else 'n/a'}",
+                ]
+            )
+        )
+    decision = verification.get("proxy_decision") if isinstance(verification.get("proxy_decision"), dict) else {}
+    reason = str(decision.get("reason") or "").strip()
+    if decision or reason:
+        st.caption(
+            " | ".join(
+                part
+                for part in [
+                    f"decision={decision.get('decision')}" if decision.get("decision") else "",
+                    f"from={decision.get('from_tier')}" if decision.get("from_tier") else "",
+                    f"to={decision.get('to_tier')}" if decision.get("to_tier") else "",
+                    reason,
+                ]
+                if part
+            )
+        )
 
 
 def _render_run_stream(base_url: str, run_id: str) -> None:
@@ -1154,6 +1281,8 @@ def _render_run_stream(base_url: str, run_id: str) -> None:
         _render_task_intent(run_payload, task_payload)
         _render_structured_metrics(run_payload, task_payload)
         _render_metric_resolution(run_payload)
+        _render_search_metric(run_payload)
+        _render_proxy_metric(run_payload)
 
         st.subheader("Live Event Feed")
         st.caption("Feed shows the full chronological history of attempts across replans/cycles.")

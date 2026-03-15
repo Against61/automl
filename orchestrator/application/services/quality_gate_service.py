@@ -5,6 +5,9 @@ import re
 from typing import Any
 
 from orchestrator.application.services.metric_interpretation_service import CodexMetricInterpreter
+from orchestrator.application.services.metric_utility_service import MetricUtilityService
+from orchestrator.application.services.evaluation_contract_service import EvaluationContractService
+from orchestrator.application.services.final_metric_service import FinalMetricService
 from orchestrator.application.services.task_intent_service import TaskIntent, TaskIntentService
 from orchestrator.config import Settings
 from orchestrator.execution.metric_parsing import normalize_metric_key
@@ -19,11 +22,17 @@ class QualityGateService:
         settings: Settings | None = None,
         metric_interpreter: CodexMetricInterpreter | None = None,
         task_intent_service: TaskIntentService | None = None,
+        metric_utility_service: MetricUtilityService | None = None,
+        evaluation_contract_service: EvaluationContractService | None = None,
+        final_metric_service: FinalMetricService | None = None,
     ):
         self.ralph_backlog = ralph_backlog
         self.settings = settings
         self.metric_interpreter = metric_interpreter
         self.task_intent_service = task_intent_service or TaskIntentService()
+        self.metric_utility_service = metric_utility_service or MetricUtilityService()
+        self.evaluation_contract_service = evaluation_contract_service or EvaluationContractService()
+        self.final_metric_service = final_metric_service or FinalMetricService(self.metric_utility_service)
 
     async def evaluate(
         self,
@@ -53,7 +62,7 @@ class QualityGateService:
         if not metric_key or target is None:
             return False, "quality requirement is malformed: missing metric or target"
 
-        metric_value, resolution = self._resolve_metric(metrics, metric_key)
+        metric_value, resolution = self.final_metric_service.resolve_metric(metrics, metric_key)
         if metric_value is None:
             interpreted = await self._interpret_missing_metric(
                 required_metric_key=metric_key,
@@ -84,31 +93,32 @@ class QualityGateService:
         target_value = self._to_float(target)
         if target_value is None:
             return False, f"unable to parse required target '{target}'"
-        if unit in {"%", "percent", "pct"} and target_value is not None:
-            target_value = target_value / 100.0
-            metric_value = self._normalize_metric_value_for_unit(metric_value, unit)
+        final_metric = self.final_metric_service.build_final_metric(
+            metric_key=metric_key,
+            resolution=resolution,
+            metric_value=metric_value,
+            operator=operator,
+            target_value=target_value,
+            unit=unit,
+        )
+        search_metric = self.final_metric_service.build_search_metric(
+            metric_key=metric_key,
+            resolution=resolution,
+            final_metric=final_metric,
+            metrics=metrics,
+        )
+        verification.details["final_metric"] = final_metric
+        verification.details["search_metric"] = search_metric
 
-        check = False
-        if operator == ">=":
-            check = metric_value >= target_value
-        elif operator == ">":
-            check = metric_value > target_value
-        elif operator == "<=":
-            check = metric_value <= target_value
-        elif operator == "<":
-            check = metric_value < target_value
-        elif operator in {"==", "="}:
-            check = abs(metric_value - target_value) <= 1e-9
-        elif operator == "!=":
-            check = abs(metric_value - target_value) > 1e-9
+        check = self.final_metric_service.passes_requirement(final_metric=final_metric)
 
         if check:
             return True, "quality gate passed"
         return (
             False,
             (
-                f"quality gate failed: {metric_key}={metric_value:.6g} {operator} "
-                f"{target_value:.6g} required (unit={unit})"
+                f"quality gate failed: {metric_key}={float(final_metric['utility']):.6g} {operator} "
+                f"{float(final_metric['target_utility']):.6g} required (unit={unit})"
             ),
         )
 
@@ -118,6 +128,9 @@ class QualityGateService:
         workspace_path,
         story_id: str | None = None,
     ) -> dict[str, Any] | None:
+        contract_requirement = self._requirement_from_contract(task)
+        if contract_requirement:
+            return contract_requirement
         constraints = [str(item).strip() for item in json.loads(task["constraints_json"])]
         requirement = self._parse_quality_requirement_from_constraints(constraints)
         if requirement:
@@ -196,32 +209,7 @@ class QualityGateService:
         }
 
     def _normalize_metric_key(self, raw: str) -> str:
-        value = normalize_metric_key(str(raw))
-        aliases = {
-            "acc": "accuracy",
-            "acc1": "accuracy",
-            "test_acc": "test_accuracy",
-            "train_acc": "train_accuracy",
-            "val_acc": "val_accuracy",
-            "val_accuracy": "val_accuracy",
-            "eval_acc": "eval_accuracy",
-            "evaluation_acc": "eval_accuracy",
-            "held_out_accuracy": "eval_accuracy",
-            "held_out_acc": "eval_accuracy",
-            "held_out_eval_accuracy": "eval_accuracy",
-            "held_out_test_accuracy": "test_accuracy",
-            "out_evaluation_accuracy": "eval_accuracy",
-            "test_loss": "test_loss",
-            "train_loss": "train_loss",
-            "loss": "loss",
-            "m_iou": "miou",
-            "mean_intersection_over_union": "mean_iou",
-            "mean_intersection_union": "mean_iou",
-            "jaccard": "iou",
-            "jaccard_index": "iou",
-            "jaccard_score": "iou",
-        }
-        return aliases.get(value, value)
+        return self.final_metric_service.normalize_metric_key(raw)
 
     def infer_task_intent(
         self,
@@ -261,6 +249,14 @@ class QualityGateService:
         story_id: str | None = None,
     ) -> dict[str, Any]:
         normalized = dict(requirement)
+        contract = self.evaluation_contract_service.load_from_task(task)
+        if contract is not None:
+            normalized["metric_key"] = contract.primary_metric_key
+            normalized["unit"] = "percent" if contract.primary_scale == "percent" else "ratio"
+            if contract.target_value is not None and normalized.get("target") in {None, ""}:
+                normalized["target"] = contract.target_value
+            normalized.setdefault("operator", ">=" if contract.primary_direction == "max" else "<=")
+            return normalized
         intent = self.infer_task_intent(
             task=task,
             workspace_path=workspace_path,
@@ -279,93 +275,56 @@ class QualityGateService:
             normalized["metric_key"] = intent.primary_metric_key
         return normalized
 
-    def _pick_metric_value(self, metrics: dict[str, Any], metric_key: str) -> tuple[Any | None, str | None, str | None]:
-        normalized = {self._normalize_metric_key(k): metrics[k] for k in metrics}
-        target = self._normalize_metric_key(metric_key)
-
-        if target in normalized:
-            return normalized[target], target, "exact"
-
-        for candidate in self._preferred_metric_aliases(target):
-            if candidate in normalized:
-                mode = "alias"
-                if candidate != target and candidate.startswith(("val_", "validation_", "test_", "eval_")):
-                    mode = "preferred_alias"
-                return normalized[candidate], candidate, mode
-
-        partial_matches: list[tuple[str, Any]] = []
-        for key, value in normalized.items():
-            if target in key or key in target:
-                partial_matches.append((key, value))
-
-        if partial_matches:
-            partial_matches.sort(key=lambda item: self._metric_match_rank(item[0], target))
-            return partial_matches[0][1], partial_matches[0][0], "partial"
-
-        return None, None, None
-
-    def _resolve_metric(self, metrics: dict[str, Any], metric_key: str) -> tuple[float | None, dict[str, Any] | None]:
-        raw_value, resolved_key, mode = self._pick_metric_value(metrics, metric_key)
-        if raw_value is None:
-            return None, None
-        value = self._to_float(raw_value)
-        if value is None:
-            return None, None
-        resolution = {
-            "required_metric_key": self._normalize_metric_key(metric_key),
-            "resolved_metric_key": resolved_key or self._normalize_metric_key(metric_key),
-            "resolved_value": value,
-            "mode": mode or "exact",
-            "confidence": "high" if mode in {"exact", "preferred_alias"} else "medium",
-            "reason": "",
-        }
-        return value, resolution
-
     def select_metric_value(self, metrics: dict[str, Any], metric_key: str) -> float | None:
-        value, _ = self._resolve_metric(metrics, metric_key)
-        return value
+        return self.final_metric_service.select_metric_value(metrics, metric_key)
 
-    def _preferred_metric_aliases(self, target: str) -> list[str]:
-        if not target:
-            return []
-        if target == "iou":
-            return [
-                "eval_mean_iou",
-                "test_mean_iou",
-                "val_mean_iou",
-                "validation_mean_iou",
-                "mean_iou",
-                "miou",
-                "eval_iou",
-                "test_iou",
-                "val_iou",
-                "jaccard",
-                "iou",
-                "train_mean_iou",
-                "train_iou",
-            ]
-        if target.startswith(("train_", "val_", "validation_", "test_", "eval_")):
-            return []
-        return [
-            f"val_{target}",
-            f"validation_{target}",
-            f"test_{target}",
-            f"eval_{target}",
-            target,
-            f"train_{target}",
-        ]
+    def select_metric_utility(self, metrics: dict[str, Any], metric_key: str, unit: str | None) -> float | None:
+        return self.final_metric_service.select_metric_utility(metrics, metric_key, unit)
 
-    def _metric_match_rank(self, candidate: str, target: str) -> tuple[int, int, str]:
-        if candidate == target:
-            return (0, 0, candidate)
-        preferred = self._preferred_metric_aliases(target)
-        if candidate in preferred:
-            return (1, preferred.index(candidate), candidate)
-        if candidate.startswith(("val_", "validation_", "test_", "eval_")):
-            return (2, len(candidate), candidate)
-        if candidate.startswith("train_"):
-            return (4, len(candidate), candidate)
-        return (3, len(candidate), candidate)
+    def attach_search_metric_progress(
+        self,
+        *,
+        task: dict[str, Any],
+        workspace_path,
+        verification: VerificationResult,
+        previous_verification: dict[str, Any] | None = None,
+        experiment_history: list[dict[str, Any]] | None = None,
+        story_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        final_metric = verification.details.get("final_metric") if isinstance(verification.details, dict) else None
+        if not isinstance(final_metric, dict):
+            return None
+        current_utility = self.metric_utility_service.coerce_float(final_metric.get("utility"))
+        if current_utility is None:
+            return None
+        requirement = self.extract_requirement(
+            task=task,
+            workspace_path=workspace_path,
+            story_id=story_id,
+        ) or {}
+        metric_key = str(final_metric.get("metric_key") or requirement.get("metric_key") or "").strip()
+        unit = str(final_metric.get("unit") or requirement.get("unit") or "ratio").strip() or "ratio"
+        prior_utilities = self._history_utilities(
+            experiment_history=experiment_history or [],
+            previous_verification=previous_verification,
+            metric_key=metric_key,
+            unit=unit,
+        )
+        target_utility = self.metric_utility_service.coerce_float(final_metric.get("target_utility"))
+        progress = self.metric_utility_service.progress(
+            utility=current_utility,
+            prior_utilities=prior_utilities,
+            target_utility=target_utility,
+        )
+        search_metric = dict(verification.details.get("search_metric") or {})
+        search_metric.update(progress)
+        effective_train_seconds = self.metric_utility_service.coerce_float(search_metric.get("effective_train_seconds"))
+        search_metric["gain_per_budget"] = self.metric_utility_service.gain_per_budget(
+            self.metric_utility_service.coerce_float(search_metric.get("delta_best")),
+            effective_train_seconds,
+        )
+        verification.details["search_metric"] = search_metric
+        return search_metric
 
     async def _interpret_missing_metric(
         self,
@@ -386,28 +345,64 @@ class QualityGateService:
             return None
 
     def _to_float(self, value: Any) -> float | None:
-        if isinstance(value, bool):
-            return float(int(value))
-        if isinstance(value, int | float):
-            return float(value)
-        if isinstance(value, str):
-            cleaned = value.strip().replace(",", ".")
-            if "%" in cleaned:
-                cleaned = cleaned.replace("%", "")
-            try:
-                return float(cleaned)
-            except ValueError:
-                return None
-        return None
+        return self.metric_utility_service.coerce_float(value)
 
     def _normalize_metric_value_for_unit(self, value: float, unit: str) -> float:
-        normalized_unit = str(unit or "").strip().lower()
-        if normalized_unit not in {"%", "percent", "pct"}:
-            return value
-        absolute = abs(value)
-        if 1.0 < absolute <= 100.0:
-            return value / 100.0
-        return value
+        scale = self.metric_utility_service.scale_for_unit(unit)
+        return self.metric_utility_service.to_utility(value, scale)
+
+    def _history_utilities(
+        self,
+        *,
+        experiment_history: list[dict[str, Any]],
+        previous_verification: dict[str, Any] | None,
+        metric_key: str,
+        unit: str,
+    ) -> list[float]:
+        utilities: list[float] = []
+        for item in experiment_history:
+            if not isinstance(item, dict):
+                continue
+            search_metric = item.get("search_metric") if isinstance(item.get("search_metric"), dict) else None
+            if isinstance(search_metric, dict):
+                utility = self.metric_utility_service.coerce_float(search_metric.get("utility"))
+                if utility is not None:
+                    utilities.append(utility)
+                    continue
+            metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+            utility = self.select_metric_utility(metrics, metric_key, unit)
+            if utility is not None:
+                utilities.append(utility)
+        if utilities or not isinstance(previous_verification, dict):
+            return utilities
+        history_entries = previous_verification.get("attempt_history")
+        if not isinstance(history_entries, list):
+            return utilities
+        for entry in history_entries:
+            if not isinstance(entry, dict):
+                continue
+            search_metric = entry.get("search_metric") if isinstance(entry.get("search_metric"), dict) else None
+            if isinstance(search_metric, dict):
+                utility = self.metric_utility_service.coerce_float(search_metric.get("utility"))
+                if utility is not None:
+                    utilities.append(utility)
+                    continue
+            metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+            utility = self.select_metric_utility(metrics, metric_key, unit)
+            if utility is not None:
+                utilities.append(utility)
+        return utilities
+
+    def _requirement_from_contract(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        contract = self.evaluation_contract_service.load_from_task(task)
+        if contract is None or contract.target_value is None:
+            return None
+        return {
+            "metric_key": contract.primary_metric_key,
+            "operator": ">=" if contract.primary_direction == "max" else "<=",
+            "target": contract.target_value,
+            "unit": "percent" if contract.primary_scale == "percent" else "ratio",
+        }
 
     def _has_split_leakage(self, metrics: dict[str, Any]) -> bool:
         leakage_keys = (

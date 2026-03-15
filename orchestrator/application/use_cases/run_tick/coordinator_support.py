@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from orchestrator.application.services.evaluation_contract_service import EvaluationContractService
 from orchestrator.application.use_cases.run_tick.planning_context import PlanningContextService
 from orchestrator.domain.errors import InvalidTransitionError
 from orchestrator.domain.state_machine import RunStateMachine
@@ -36,6 +37,7 @@ class RunCoordinatorSupportService:
         codex_runner: CodexRunner,
         artifact_publisher: ArtifactPublisher,
         planning_context_service: PlanningContextService,
+        evaluation_contract_service: EvaluationContractService,
     ) -> None:
         self.settings = settings
         self.db = db
@@ -43,6 +45,7 @@ class RunCoordinatorSupportService:
         self.codex_runner = codex_runner
         self.artifact_publisher = artifact_publisher
         self.planning_context_service = planning_context_service
+        self.evaluation_contract_service = evaluation_contract_service
 
     async def set_status(
         self,
@@ -92,6 +95,14 @@ class RunCoordinatorSupportService:
 
     async def submit_task_event(self, payload: dict[str, Any]) -> str | None:
         event = TaskSubmittedEvent.model_validate(payload)
+        workspace_path = self.workspace_dir(event.workspace_id)
+        evaluation_contract = self.evaluation_contract_service.serialize(
+            self.evaluation_contract_service.build_from_payload(
+                goal=event.payload.goal,
+                constraints=list(event.payload.constraints),
+                workspace_path=workspace_path,
+            )
+        )
         inserted = await self.db.record_stream_event(
             event_id=str(event.event_id),
             stream=self.settings.stream_tasks,
@@ -101,7 +112,7 @@ class RunCoordinatorSupportService:
         if not inserted:
             logger.info("duplicate task event ignored: %s", event.event_id)
             return None
-        await self.db.upsert_task(event)
+        await self.db.upsert_task(event, evaluation_contract)
         run_signature = self.planning_context_service.build_task_goal_signature(event.payload.model_dump(mode="json"))
         run_id = await self.db.create_or_get_run(
             task_id=str(event.task_id),

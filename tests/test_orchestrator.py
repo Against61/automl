@@ -224,6 +224,38 @@ async def test_database_lists_runs_by_status(tmp_path: Path):
         await db.close()
 
 
+@pytest.mark.asyncio
+async def test_submit_task_event_materializes_evaluation_contract(tmp_path: Path):
+    session, db, _bus, _worker, _settings = await create_session(tmp_path)
+    payload = {
+        "event_id": str(uuid4()),
+        "event_type": "task.submitted",
+        "schema_version": "1.0",
+        "task_id": str(uuid4()),
+        "workspace_id": "demo",
+        "priority": "normal",
+        "payload": {
+            "goal": "Train a segmentation baseline",
+            "constraints": ["RALPH_REQUIRED_METRIC: mean_iou >= 0.6"],
+            "pdf_scope": [],
+            "execution_mode": "plan_execute",
+        },
+    }
+    try:
+        run_id = await session.submit_task_event(payload)
+        assert run_id is not None
+        task = await db.get_task(payload["task_id"])
+        run = await db.get_run(run_id)
+
+        assert task is not None
+        assert json.loads(task["evaluation_contract_json"])["primary_metric_key"] == "mean_iou"
+        assert run is not None
+        assert run.evaluation_contract_json is not None
+        assert run.evaluation_contract_json["task_family"] == "segmentation"
+    finally:
+        await db.close()
+
+
 def test_codex_soft_failure_detection(tmp_path: Path):
     settings = Settings(
         _env_file=None,
@@ -2345,6 +2377,10 @@ async def test_database_records_and_lists_experiment_attempts(tmp_path: Path):
         quality_status="failed",
         quality_reason="accuracy below target",
         metrics={"accuracy": 0.87},
+        final_metric={"metric_key": "accuracy", "raw_value": 0.87, "utility": 0.87},
+        budget_tier={"name": "short", "max_effective_train_seconds": 300, "max_epochs": 5, "max_steps": 256},
+        proxy_metric={"kind": "micro_loss", "metric_key": "val_loss", "value": 0.42, "proxy_gain": 0.16},
+        search_metric={"utility": 0.87, "delta_best": 0.02, "gap_closed": 0.4},
         hyperparameters={"epochs": 5, "learning_rate": 0.001},
         strategy={"chosen_intervention_id": "targeted_finetune"},
         skill_paths=["skills/pytorch-lightning/SKILL.md"],
@@ -2357,6 +2393,11 @@ async def test_database_records_and_lists_experiment_attempts(tmp_path: Path):
     )
     assert len(attempts) == 1
     assert attempts[0]["metrics"]["accuracy"] == pytest.approx(0.87)
+    assert attempts[0]["final_metric"]["metric_key"] == "accuracy"
+    assert attempts[0]["budget_tier"]["name"] == "short"
+    assert attempts[0]["proxy_metric"]["proxy_gain"] == pytest.approx(0.16)
+    assert attempts[0]["search_metric"]["utility"] == pytest.approx(0.87)
+    assert attempts[0]["search_metric"]["gap_closed"] == pytest.approx(0.4)
     assert attempts[0]["hyperparameters"]["epochs"] == 5
     assert attempts[0]["skill_paths"] == ["skills/pytorch-lightning/SKILL.md"]
 

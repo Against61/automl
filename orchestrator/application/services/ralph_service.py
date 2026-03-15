@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from orchestrator.application.services.evaluation_contract_service import EvaluationContractService
 from orchestrator.application.services.quality_gate_service import QualityGateService
 from orchestrator.application.services.workspace_snapshot_service import WorkspaceSnapshotService
 from orchestrator.config import Settings
@@ -42,6 +43,7 @@ class RalphScenarioService:
         self.bus = bus
         self.quality_gate_service = quality_gate_service
         self.workspace_snapshot_service = WorkspaceSnapshotService()
+        self.evaluation_contract_service = EvaluationContractService()
 
     def resolve_next_story(self, workspace_path: Path, explicit_story_id: str | None = None) -> RalphStory | None:
         prd = self.backlog.load_prd(workspace_path)
@@ -284,6 +286,7 @@ class RalphScenarioService:
         primary_goal_block = primary_goal or "not provided"
         quality_requirement = self.quality_gate_service.extract_requirement(task=task, workspace_path=workspace_path)
         task_intent = self.quality_gate_service.infer_task_intent(task=task, workspace_path=workspace_path)
+        evaluation_contract = self.evaluation_contract_service.load_from_task(task)
         quality_line = "not provided"
         if quality_requirement:
             metric = quality_requirement.get("metric_key", "metric")
@@ -291,6 +294,7 @@ class RalphScenarioService:
             target = quality_requirement.get("target", "value")
             unit = quality_requirement.get("unit", "ratio")
             quality_line = f"{metric} {operator} {target} ({unit})"
+        contract_block = self.evaluation_contract_service.to_prompt_summary(evaluation_contract)
         intent_block = (
             f"task_family={task_intent.task_family}; "
             f"primary_metric={task_intent.primary_metric_key or 'not set'}; "
@@ -328,6 +332,7 @@ class RalphScenarioService:
             f"Goal:\n{task['goal']}\n\n"
             f"Primary user goal:\n{primary_goal_block}\n\n"
             f"Quality requirement:\n{quality_line}\n\n"
+            f"Evaluation contract:\n{contract_block}\n\n"
             f"Inferred task intent:\n{intent_block}\n\n"
             f"Constraints:\n{constraints_block}\n\n"
             f"Retrieved context:\n{context_block}\n\n"
@@ -417,6 +422,7 @@ class RalphScenarioService:
             workspace_path=workspace_path,
             story_id=story.story_id,
         )
+        evaluation_contract = self.evaluation_contract_service.load_from_task(task)
         for inferred_constraint in task_intent.as_constraints():
             prefix = inferred_constraint.split(":", 1)[0].strip()
             if not any(str(item).strip().startswith(f"{prefix}:") for item in constraints):
@@ -467,11 +473,13 @@ class RalphScenarioService:
             f"- real_dataset_smoke_required: {'true' if task_intent.requires_real_dataset_smoke else 'false'}\n"
             f"- evidence: {', '.join(task_intent.evidence) or 'none'}"
         )
+        contract_block = self.evaluation_contract_service.to_prompt_summary(evaluation_contract)
         augmented_goal = (
             f"Implement RALPH story {story.story_id}: {story.title}\n\n"
             f"Primary user goal (highest priority):\n{primary_goal_block}\n\n"
             f"Story description:\n{story.description}\n\n"
             f"Acceptance criteria:\n{acceptance_block}\n\n"
+            f"Evaluation contract:\n{contract_block}\n\n"
             f"Inferred task intent:\n{intent_block}\n\n"
             f"Task constraints:\n{constraints_block}\n\n"
             f"Retrieved context:\n{context_block}\n\n"
@@ -504,6 +512,11 @@ class RalphScenarioService:
             previous_error=run.error_message,
             last_failed_step=last_failed_step,
             previous_verification=previous_verification,
+            evaluation_contract=(
+                self.evaluation_contract_service.serialize(evaluation_contract)
+                if evaluation_contract is not None
+                else None
+            ),
         )
         return await self.planner_for_ralph().build_plan(planner_input)
 

@@ -24,6 +24,33 @@ def compact_strategy_payload(strategy: dict[str, Any] | None) -> dict[str, Any] 
             "gap": objective.get("gap"),
             "unit": objective.get("unit"),
         },
+        "search_objective": {
+            "utility": (
+                strategy.get("search_objective", {}).get("utility")
+                if isinstance(strategy.get("search_objective"), dict)
+                else None
+            ),
+            "target_utility": (
+                strategy.get("search_objective", {}).get("target_utility")
+                if isinstance(strategy.get("search_objective"), dict)
+                else None
+            ),
+            "delta_best": (
+                strategy.get("search_objective", {}).get("delta_best")
+                if isinstance(strategy.get("search_objective"), dict)
+                else None
+            ),
+            "gap_closed": (
+                strategy.get("search_objective", {}).get("gap_closed")
+                if isinstance(strategy.get("search_objective"), dict)
+                else None
+            ),
+            "gain_per_budget": (
+                strategy.get("search_objective", {}).get("gain_per_budget")
+                if isinstance(strategy.get("search_objective"), dict)
+                else None
+            ),
+        },
         "chosen_intervention_id": strategy.get("chosen_intervention_id") or chosen.get("id"),
         "chosen_intervention": {
             "id": chosen.get("id"),
@@ -55,6 +82,11 @@ def compact_verification_history_entry(payload: dict[str, Any]) -> dict[str, Any
             "status",
             "commands",
             "metrics",
+            "final_metric",
+            "budget_tier",
+            "proxy_metric",
+            "search_metric",
+            "proxy_decision",
             "latest_hyperparameters",
             "hyperparameter_attempts",
             "quality_gate",

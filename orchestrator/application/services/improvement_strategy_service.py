@@ -38,10 +38,18 @@ class ImprovementStrategyService:
             target = target / 100.0
 
         metrics = dict(verification.metrics or {})
+        final_metric = verification.details.get("final_metric") if isinstance(verification.details, dict) else {}
+        proxy_metric = verification.details.get("proxy_metric") if isinstance(verification.details, dict) else {}
+        search_metric = verification.details.get("search_metric") if isinstance(verification.details, dict) else {}
         metric_value = self.quality_gate_service.select_metric_value(metrics, metric_key) if metric_key else None
         metric_gap = None
         if metric_value is not None and target is not None:
             metric_gap = target - metric_value
+        utility_value = self._to_float(search_metric.get("utility")) if isinstance(search_metric, dict) else None
+        target_utility = self._to_float(search_metric.get("target_utility")) if isinstance(search_metric, dict) else None
+        utility_gap = None
+        if utility_value is not None and target_utility is not None:
+            utility_gap = target_utility - utility_value
 
         train_metric = self.quality_gate_service.select_metric_value(metrics, "train_accuracy")
         val_metric = self.quality_gate_service.select_metric_value(metrics, "val_accuracy")
@@ -57,10 +65,10 @@ class ImprovementStrategyService:
         experiment_attempts = [item for item in (experiment_history or []) if isinstance(item, dict)]
         compact_experiment_attempts = [self._compact_experiment_attempt(item) for item in experiment_attempts]
         diagnosis = self._diagnose(
-            metric_gap=metric_gap,
+            metric_gap=utility_gap if utility_gap is not None else metric_gap,
             overfit_gap=overfit_gap,
-            metric_value=metric_value,
-            target_value=target,
+            metric_value=utility_value if utility_value is not None else metric_value,
+            target_value=target_utility if target_utility is not None else target,
         )
         relevant_skills = self._select_relevant_skills(
             available_skills=available_skills,
@@ -94,6 +102,27 @@ class ImprovementStrategyService:
                 "current_value": metric_value,
                 "gap": metric_gap,
             },
+            "search_objective": {
+                "utility": utility_value,
+                "target_utility": target_utility,
+                "gap": utility_gap,
+                "delta_best": self._to_float(search_metric.get("delta_best")) if isinstance(search_metric, dict) else None,
+                "delta_base": self._to_float(search_metric.get("delta_base")) if isinstance(search_metric, dict) else None,
+                "gap_closed": self._to_float(search_metric.get("gap_closed")) if isinstance(search_metric, dict) else None,
+                "gain_per_budget": self._to_float(search_metric.get("gain_per_budget")) if isinstance(search_metric, dict) else None,
+                "baseline_utility": self._to_float(search_metric.get("baseline_utility")) if isinstance(search_metric, dict) else None,
+                "best_utility_so_far": self._to_float(search_metric.get("best_utility_so_far")) if isinstance(search_metric, dict) else None,
+            },
+            "proxy_objective": {
+                "kind": proxy_metric.get("kind") if isinstance(proxy_metric, dict) else None,
+                "metric_key": proxy_metric.get("metric_key") if isinstance(proxy_metric, dict) else None,
+                "value": self._to_float(proxy_metric.get("value")) if isinstance(proxy_metric, dict) else None,
+                "baseline_value": self._to_float(proxy_metric.get("baseline_value")) if isinstance(proxy_metric, dict) else None,
+                "best_value_so_far": self._to_float(proxy_metric.get("best_value_so_far")) if isinstance(proxy_metric, dict) else None,
+                "proxy_gain": self._to_float(proxy_metric.get("proxy_gain")) if isinstance(proxy_metric, dict) else None,
+                "gain_per_budget": self._to_float(proxy_metric.get("gain_per_budget")) if isinstance(proxy_metric, dict) else None,
+                "direction": proxy_metric.get("direction") if isinstance(proxy_metric, dict) else None,
+            },
             "diagnosis": diagnosis,
             "history": {
                 "attempt_number": attempt_number,
@@ -101,6 +130,9 @@ class ImprovementStrategyService:
                 "hyperparameter_attempts": hyperparameter_attempts[-8:],
                 "experiment_attempts": compact_experiment_attempts[-8:],
                 "last_metrics": metrics,
+                "last_final_metric": final_metric if isinstance(final_metric, dict) else {},
+                "last_proxy_metric": proxy_metric if isinstance(proxy_metric, dict) else {},
+                "last_search_metric": search_metric if isinstance(search_metric, dict) else {},
             },
             "candidate_interventions": candidates,
             "chosen_intervention_id": chosen.get("id"),
@@ -420,7 +452,11 @@ class ImprovementStrategyService:
             "attempt": item.get("attempt"),
             "quality_status": item.get("quality_status"),
             "quality_reason": item.get("quality_reason"),
+            "budget_tier": item.get("budget_tier") if isinstance(item.get("budget_tier"), dict) else {},
             "metrics": item.get("metrics") if isinstance(item.get("metrics"), dict) else {},
+            "final_metric": item.get("final_metric") if isinstance(item.get("final_metric"), dict) else {},
+            "search_metric": item.get("search_metric") if isinstance(item.get("search_metric"), dict) else {},
+            "proxy_metric": item.get("proxy_metric") if isinstance(item.get("proxy_metric"), dict) else {},
             "hyperparameters": item.get("hyperparameters") if isinstance(item.get("hyperparameters"), dict) else {},
             "skill_paths": list(item.get("skill_paths") or [])[:4] if isinstance(item.get("skill_paths"), list) else [],
             "strategy": {

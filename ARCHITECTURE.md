@@ -45,6 +45,12 @@ Run tick support modules:
 - `orchestrator/application/use_cases/run_tick/hyperparameters.py`
 
 Application services used by stages:
+- `orchestrator/application/services/evaluation_contract_service.py`
+- `orchestrator/application/services/final_metric_service.py`
+- `orchestrator/application/services/proxy_metric_service.py`
+- `orchestrator/application/services/proxy_continuation_service.py`
+- `orchestrator/application/services/budget_tier_service.py`
+- `orchestrator/application/services/metric_utility_service.py`
 - `orchestrator/application/services/plan_contract_service.py`
 - `orchestrator/application/services/recovery_service.py`
 - `orchestrator/application/services/quality_gate_service.py`
@@ -208,11 +214,15 @@ Handles:
 Responsibilities:
 - per-step policy checks
 - per-step approval gate
+- runtime budget-tier selection
+- inject `OPENIN_BUDGET_TIER` and `OPENIN_MAX_*` into shell training and preflight steps
+- emit budget hints for Codex-generated training entrypoints
 - synthetic smoke guard
 - step execution via `CodexRunner`
 - missing-file recovery
 - soft threshold failure normalization
 - plan-contract checks
+- runtime budget-contract checks against structured metrics artifacts
 - execution replans
 - story-cycle advance
 - transition to:
@@ -229,11 +239,15 @@ Handles:
 Responsibilities:
 - run `Verifier`
 - attach hyperparameter context
-- evaluate quality gate
+- build `proxy_metric`
+- attach current `budget_tier`
+- evaluate quality gate using `final_metric` and `search_metric`
+- compute continuation decision from `proxy_gain`
 - build improvement strategy
 - persist verification artifacts
 - record experiment attempts
-- schedule quality replans
+- schedule `PROXY_REPLAN` for `promote/discard`
+- schedule `QUALITY_REPLAN` only for full quality-loop failures
 - transition to:
   - `CONTEXT_READY`
   - `PACKAGING`
@@ -281,6 +295,7 @@ Purpose:
 - write experiment history artifacts
 - write experiment attempts to SQLite
 - parse `max_quality_retries`
+- preserve `final_metric`, `proxy_metric`, `search_metric`, `budget_tier`, and proxy decisions in history
 
 ### `execution_guards.py`
 Purpose:
@@ -288,6 +303,9 @@ Purpose:
 - plan contract evaluation
 - missing-file recovery
 - synthetic smoke guard
+- preflight dependency blocking
+- structured dependency failure classification from metrics payloads
+- runtime budget-contract validation for preflight/training steps
 - planning-only quality skip
 - quality-plan guard
 - execution failure formatting
@@ -303,6 +321,131 @@ Purpose:
 Purpose:
 - extract hyperparameters from shell commands
 - build verification hyperparameter history context
+
+## Evaluation Model
+
+The runtime now uses three separate metric layers plus a budget contract.
+
+### `EvaluationContract`
+
+Defined in:
+
+- `orchestrator/domain/evaluation_contract.py`
+- `orchestrator/application/services/evaluation_contract_service.py`
+
+This contract is created once from task intent and explicit requirements, then snapshotted into both:
+
+- `tasks.evaluation_contract_json`
+- `runs.evaluation_contract_json`
+
+It defines:
+
+1. `task_family`
+2. `primary_metric_key`
+3. `primary_direction`
+4. `primary_scale`
+5. `proxy_metric_kind`
+6. `micro_split_id`
+7. `macro_split_id`
+8. `min_effect_size`
+9. `budget_tiers`
+
+This removes metric-family drift from the hot path. Planning, verification, and quality decisions should read the contract rather than re-inferring success criteria from text on every cycle.
+
+### Final / Proxy / Search Metrics
+
+The verification payload now separates:
+
+1. `final_metric`
+   - task-specific success metric
+   - examples: `accuracy`, `mean_iou`, `dice`, `map50_95`
+
+2. `proxy_metric`
+   - cheap inner-loop signal
+   - usually `micro_loss`
+   - includes `proxy_gain` and `gain_per_budget`
+
+3. `search_metric`
+   - canonical outer-loop utility signal
+   - contains normalized `utility`, `delta_best`, `gap_closed`, and `gain_per_budget`
+
+Supporting services:
+
+- `orchestrator/application/services/final_metric_service.py`
+- `orchestrator/application/services/proxy_metric_service.py`
+- `orchestrator/application/services/metric_utility_service.py`
+
+Decision split:
+
+1. `proxy_gain` decides continuation at `micro` and `short` tiers
+2. `final_metric` / `search_metric.utility` decide task success
+
+### Budget Contract
+
+Budget tiers are first-class runtime state, not a heuristic derived only from execution cycle.
+
+Primary files:
+
+- `orchestrator/application/services/budget_tier_service.py`
+- `orchestrator/application/services/proxy_continuation_service.py`
+- `orchestrator/application/use_cases/run_tick/execution_stage.py`
+- `orchestrator/application/use_cases/run_tick/verification_stage.py`
+
+Persistent state:
+
+- `runs.budget_tier`
+- `experiment_attempts.budget_tier_json`
+
+Tier order:
+
+1. `smoke`
+2. `micro`
+3. `short`
+4. `full`
+
+Runtime shell steps receive:
+
+- `OPENIN_BUDGET_TIER`
+- `OPENIN_MAX_EFFECTIVE_TRAIN_SECONDS`
+- `OPENIN_MAX_EPOCHS`
+- `OPENIN_MAX_STEPS`
+- `OPENIN_MICRO_SPLIT_ID`
+- `OPENIN_MACRO_SPLIT_ID`
+- `OPENIN_PROXY_METRIC_KIND`
+
+Training/preflight scripts are expected to write matching structured fields back into `metrics.json` / `preflight_metrics.json`, including:
+
+- `budget_tier`
+- `budget_respected`
+- `effective_train_seconds`
+- `warmup_seconds`
+- `max_effective_train_seconds`
+- `max_epochs`
+- `max_steps`
+- `epochs_trained`
+- `train_steps_completed`
+
+If a shell step ignores this contract, `execution_guards.py` converts it into a contract failure even when the process exits with code `0`.
+
+### Promote / Discard Loop
+
+Continuation decisions for early tiers are handled by:
+
+- `orchestrator/application/services/proxy_continuation_service.py`
+
+Rules:
+
+1. At `micro` / `short`, if quality gate does not pass:
+   - `proxy_gain >= min_effect_size` -> `promote`
+   - otherwise -> `discard`
+2. `promote` advances:
+   - `micro -> short`
+   - `short -> full`
+3. `discard` resets the next candidate back to:
+   - `micro`
+4. `full` remains the real quality loop where `QUALITY_REPLAN` applies
+
+This is why `budget_tier` must be stored explicitly on the run. `execution_cycle` alone is not sufficient once discard/restart enters the loop.
 
 ## Current Control Flow
 
@@ -323,6 +466,18 @@ For one run, the effective flow is:
 
 The coordinator loop repeats until the run becomes terminal or waits for user input.
 
+For training-oriented tasks, the practical inner loop is now:
+
+1. prepare code / candidate
+2. `smoke` preflight under runtime budget contract
+3. `micro` train/eval
+4. build `proxy_metric`
+5. `promote` or `discard`
+6. `short` train/eval
+7. `promote` or `discard`
+8. `full` train/eval
+9. final quality gate on `final_metric` / `search_metric`
+
 ## Where To Change What
 
 - Plan generation behavior:
@@ -340,6 +495,8 @@ The coordinator loop repeats until the run becomes terminal or waits for user in
 
 - Step execution orchestration:
   - `orchestrator/application/use_cases/run_tick/execution_stage.py`
+  - `orchestrator/application/services/budget_tier_service.py`
+  - `orchestrator/application/use_cases/run_tick/execution_guards.py`
 
 - Codex execution behavior:
   - `orchestrator/execution/codex_runner.py`
@@ -362,10 +519,18 @@ The coordinator loop repeats until the run becomes terminal or waits for user in
 - `orchestrator/application/use_cases/run_tick/verification_stage.py`
 - `orchestrator/application/use_cases/run_tick/verification_flow.py`
 - `orchestrator/application/services/quality_gate_service.py`
+- `orchestrator/application/services/final_metric_service.py`
+- `orchestrator/application/services/proxy_metric_service.py`
+- `orchestrator/application/services/proxy_continuation_service.py`
+- `orchestrator/application/services/metric_utility_service.py`
 - `orchestrator/execution/verifier.py`
 
 - Stepio recovery behavior:
   - `orchestrator/application/use_cases/run_tick/stepio_recovery.py`
+
+- Evaluation contract and metric policy:
+  - `orchestrator/domain/evaluation_contract.py`
+  - `orchestrator/application/services/evaluation_contract_service.py`
 
 - Domain status transitions:
   - `orchestrator/domain/state_machine.py`
@@ -399,3 +564,4 @@ The coordinator loop repeats until the run becomes terminal or waits for user in
 - Runtime entrypoint is unchanged.
 - `orchestrator/runtime/session.py` still exists as compatibility facade.
 - The main refactor is internal: stage logic moved out of `process_run_tick.py` into `run_tick/` modules.
+- The current runtime assumes training scripts cooperate with the structured budget contract described above.

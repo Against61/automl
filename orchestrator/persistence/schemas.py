@@ -458,6 +458,7 @@ class RunRecord(BaseModel):
     status: RunStatus
     created_at: datetime
     updated_at: datetime
+    budget_tier: str = "micro"
     execution_cycle: int = 0
     cycle_started_at: datetime | None = None
     attempts_by_stage: dict[str, int] = Field(default_factory=dict)
@@ -465,6 +466,7 @@ class RunRecord(BaseModel):
     plan_json: dict[str, Any] | None = None
     context_json: list[dict[str, Any]] | None = None
     verification_json: dict[str, Any] | None = None
+    evaluation_contract_json: dict[str, Any] | None = None
     error_message: str | None = None
     approved_at: datetime | None = None
     goal_signature: str | None = None

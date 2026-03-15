@@ -4,6 +4,7 @@ import hashlib
 import json
 from typing import Any
 
+from orchestrator.application.services.evaluation_contract_service import EvaluationContractService
 from orchestrator.persistence.db import Database
 from orchestrator.persistence.schemas import PlannerPlan, RetrievedContext, RunRecord
 from orchestrator.planning.planner import PlanInput
@@ -13,6 +14,7 @@ class PlanningContextService:
     def __init__(self, db: Database, experiment_history_context_limit: int) -> None:
         self.db = db
         self.experiment_history_context_limit = experiment_history_context_limit
+        self.evaluation_contract_service = EvaluationContractService()
 
     def build_plan_input(
         self,
@@ -26,6 +28,7 @@ class PlanningContextService:
         last_failed_step: dict[str, Any] | None,
         previous_verification: dict[str, Any] | None = None,
     ) -> PlanInput:
+        evaluation_contract = run.evaluation_contract_json or self.extract_evaluation_contract(task)
         return PlanInput(
             goal=task["goal"],
             constraints=json.loads(task["constraints_json"]),
@@ -36,6 +39,7 @@ class PlanningContextService:
             previous_error=run.error_message,
             last_failed_step=last_failed_step,
             previous_verification=previous_verification,
+            evaluation_contract=evaluation_contract,
         )
 
     def latest_verification_snapshot(self, verification_json: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -49,6 +53,11 @@ class PlanningContextService:
                 "status",
                 "commands",
                 "metrics",
+                "final_metric",
+                "budget_tier",
+                "proxy_metric",
+                "search_metric",
+                "proxy_decision",
                 "metric_resolution",
                 "latest_hyperparameters",
                 "hyperparameter_attempts",
@@ -68,6 +77,11 @@ class PlanningContextService:
                         "attempt": entry.get("attempt"),
                         "status": entry.get("status"),
                         "metrics": entry.get("metrics", {}),
+                        "final_metric": entry.get("final_metric", {}),
+                        "budget_tier": entry.get("budget_tier", {}),
+                        "proxy_metric": entry.get("proxy_metric", {}),
+                        "search_metric": entry.get("search_metric", {}),
+                        "proxy_decision": entry.get("proxy_decision", {}),
                         "latest_hyperparameters": entry.get("latest_hyperparameters", {}),
                         "hyperparameter_attempts": (entry.get("hyperparameter_attempts") or [])[-4:],
                     }
@@ -107,6 +121,7 @@ class PlanningContextService:
             quality_status = str(item.get("quality_status") or "n/a")
             quality_reason = str(item.get("quality_reason") or "").strip()
             metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+            budget_tier = item.get("budget_tier") if isinstance(item.get("budget_tier"), dict) else {}
             hyperparameters = item.get("hyperparameters") if isinstance(item.get("hyperparameters"), dict) else {}
             skill_paths = item.get("skill_paths") if isinstance(item.get("skill_paths"), list) else []
             chosen = None
@@ -127,7 +142,7 @@ class PlanningContextService:
             skill_preview = ", ".join(str(item) for item in skill_paths[:3]) or "no skills"
             line = (
                 f"- run={run_id} attempt={attempt} quality={quality_status} "
-                f"chosen={chosen or 'n/a'} metrics=[{metric_preview}] "
+                f"tier={budget_tier.get('name') or 'n/a'} chosen={chosen or 'n/a'} metrics=[{metric_preview}] "
                 f"hyperparameters=[{hp_preview}] skills=[{skill_preview}]"
             )
             if quality_reason:
@@ -216,6 +231,28 @@ class PlanningContextService:
                 "gap": objective.get("gap"),
                 "unit": objective.get("unit"),
             },
+            "search_objective": {
+                "utility": (
+                    strategy.get("search_objective", {}).get("utility")
+                    if isinstance(strategy.get("search_objective"), dict)
+                    else None
+                ),
+                "target_utility": (
+                    strategy.get("search_objective", {}).get("target_utility")
+                    if isinstance(strategy.get("search_objective"), dict)
+                    else None
+                ),
+                "delta_best": (
+                    strategy.get("search_objective", {}).get("delta_best")
+                    if isinstance(strategy.get("search_objective"), dict)
+                    else None
+                ),
+                "gap_closed": (
+                    strategy.get("search_objective", {}).get("gap_closed")
+                    if isinstance(strategy.get("search_objective"), dict)
+                    else None
+                ),
+            },
             "diagnosis": {
                 "pattern": diagnosis.get("pattern"),
                 "confidence": diagnosis.get("confidence"),
@@ -275,6 +312,12 @@ class PlanningContextService:
             return self.build_task_goal_signature(payload_data)
         except Exception:
             return None
+
+    def extract_evaluation_contract(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        contract = self.evaluation_contract_service.load_from_task(task)
+        if contract is None:
+            return None
+        return self.evaluation_contract_service.serialize(contract)
 
     @staticmethod
     def extract_task_payload(task: dict[str, Any]) -> dict[str, Any]:

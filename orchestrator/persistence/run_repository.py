@@ -26,7 +26,7 @@ class RunRepository:
         async with self.db._lock:
             row = await self.db._fetchone(
                 """
-                SELECT run_id, status, goal_signature
+                SELECT run_id, status, goal_signature, evaluation_contract_json
                 FROM runs
                 WHERE task_id = ?
                 ORDER BY created_at DESC
@@ -38,7 +38,23 @@ class RunRepository:
                 row_signature = row["goal_signature"]
                 status = RunStatus(row["status"])
                 if row_signature == goal_signature and status not in RunStatus.terminal():
+                    if not row["evaluation_contract_json"]:
+                        task_row = await self.db._fetchone(
+                            "SELECT evaluation_contract_json FROM tasks WHERE task_id = ?",
+                            (task_id,),
+                        )
+                        if task_row and task_row["evaluation_contract_json"]:
+                            await self.db.conn.execute(
+                                "UPDATE runs SET evaluation_contract_json = ?, updated_at = ? WHERE run_id = ?",
+                                (task_row["evaluation_contract_json"], utc_now_iso(), str(row["run_id"])),
+                            )
+                            await self.db.conn.commit()
                     return str(row["run_id"])
+            task_row = await self.db._fetchone(
+                "SELECT evaluation_contract_json FROM tasks WHERE task_id = ?",
+                (task_id,),
+            )
+            evaluation_contract_json = task_row["evaluation_contract_json"] if task_row else None
             run_id = str(uuid4())
             now = utc_now_iso()
             await self.db.conn.execute(
@@ -50,12 +66,14 @@ class RunRepository:
                     priority,
                     status,
                     goal_signature,
+                    evaluation_contract_json,
+                    budget_tier,
                     execution_cycle,
                     cycle_started_at,
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -64,6 +82,8 @@ class RunRepository:
                     priority.value,
                     RunStatus.RECEIVED.value,
                     goal_signature,
+                    evaluation_contract_json,
+                    "micro",
                     0,
                     now,
                     now,
@@ -218,6 +238,22 @@ class RunRepository:
             )
             await self.db.conn.commit()
 
+    async def set_evaluation_contract(self, run_id: str, evaluation_contract_json: dict[str, Any]) -> None:
+        async with self.db._lock:
+            await self.db.conn.execute(
+                "UPDATE runs SET evaluation_contract_json = ?, updated_at = ? WHERE run_id = ?",
+                (json_dumps(evaluation_contract_json), utc_now_iso(), run_id),
+            )
+            await self.db.conn.commit()
+
+    async def set_budget_tier(self, run_id: str, budget_tier: str) -> None:
+        async with self.db._lock:
+            await self.db.conn.execute(
+                "UPDATE runs SET budget_tier = ?, updated_at = ? WHERE run_id = ?",
+                (str(budget_tier or "micro"), utc_now_iso(), run_id),
+            )
+            await self.db.conn.commit()
+
     async def increment_stage_attempt(self, run_id: str, stage: str) -> int:
         run = await self.get_run(run_id)
         if run is None:
@@ -361,6 +397,7 @@ class RunRepository:
                 SET status = ?,
                     error_message = NULL,
                     goal_signature = COALESCE(?, goal_signature),
+                    budget_tier = 'micro',
                     execution_cycle = ?,
                     cycle_started_at = ?,
                     context_json = NULL,
