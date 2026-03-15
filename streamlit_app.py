@@ -10,9 +10,11 @@ from typing import Any
 from urllib import error, request
 
 import streamlit as st
+from orchestrator.application.services.task_intent_service import TaskIntentService
 
 
 TERMINAL_STATUSES = {"COMPLETED", "FAILED", "CANCELLED"}
+_TASK_INTENT = TaskIntentService()
 
 
 def _api_call(base_url: str, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -66,6 +68,16 @@ def _load_verification_fallback(run_id: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _load_json_if_exists(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _verification_for_display(run_payload: dict[str, Any]) -> dict[str, Any] | None:
     verification = run_payload.get("verification_json")
     if isinstance(verification, dict):
@@ -74,18 +86,36 @@ def _verification_for_display(run_payload: dict[str, Any]) -> dict[str, Any] | N
     return _load_verification_fallback(run_id)
 
 
-def _get_live_log_tail(base_url: str, run_id: str, step_id: str, stream: str, max_bytes: int = 32768) -> tuple[str, str | None]:
-    if not run_id or not step_id:
-        return "", None
-    try:
-        payload = _api_call(
-            base_url,
-            "GET",
-            f"/runs/{run_id}/live-log?step_id={step_id}&stream={stream}&max_bytes={int(max_bytes)}",
-        )
-    except Exception:
-        return "", None
-    return str(payload.get("content") or ""), payload.get("path")
+def _structured_metrics_payload(run_payload: dict[str, Any], task_payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    run_id = str(run_payload.get("run_id") or "").strip()
+    verification = _verification_for_display(run_payload)
+    if isinstance(verification, dict):
+        metrics = verification.get("metrics")
+        if isinstance(metrics, dict) and metrics:
+            return metrics, "verification.metrics"
+
+    run_metrics_path = Path("workspace") / "runs" / run_id / "metrics.json"
+    run_metrics = _load_json_if_exists(run_metrics_path)
+    if isinstance(run_metrics, dict):
+        if isinstance(run_metrics.get("metrics"), dict):
+            return run_metrics["metrics"], str(run_metrics_path)
+        return run_metrics, str(run_metrics_path)
+
+    workspace_id = str(task_payload.get("workspace_id") or "").strip()
+    if workspace_id:
+        workspace_root = Path("workspace") / workspace_id
+        workspace_candidates = [
+            workspace_root / "metrics.json",
+            workspace_root / "results.json",
+        ]
+        for path in workspace_candidates:
+            payload = _load_json_if_exists(path)
+            if not isinstance(payload, dict):
+                continue
+            if isinstance(payload.get("metrics"), dict):
+                return payload["metrics"], str(path)
+            return payload, str(path)
+    return None, None
 
 
 def _task_constraints(task_payload: dict[str, Any]) -> list[str]:
@@ -148,6 +178,29 @@ def _extract_primary_goal(task_payload: dict[str, Any], constraints: list[str]) 
     if primary:
         return primary
     return str(task_payload.get("goal") or "").strip()
+
+
+def _task_intent_payload(run_payload: dict[str, Any], task_payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    verification = _verification_for_display(run_payload)
+    if isinstance(verification, dict):
+        intent = verification.get("task_intent")
+        if isinstance(intent, dict) and intent:
+            return intent, "verification.task_intent"
+
+    workspace_id = str(task_payload.get("workspace_id") or run_payload.get("workspace_id") or "").strip()
+    workspace_path = Path("workspace") / workspace_id if workspace_id else None
+    intent = _TASK_INTENT.infer_from_task(
+        task=task_payload,
+        workspace_path=workspace_path if workspace_path and workspace_path.exists() else None,
+    )
+    return {
+        "task_family": intent.task_family,
+        "metric_family": intent.metric_family,
+        "primary_metric_key": intent.primary_metric_key,
+        "preferred_metrics": list(intent.preferred_metrics),
+        "real_dataset_smoke_required": intent.requires_real_dataset_smoke,
+        "evidence": list(intent.evidence),
+    }, "inferred"
 
 
 def _prettify_identifier(value: str) -> str:
@@ -234,14 +287,43 @@ def _append_feed(run_id: str, message: str) -> None:
 
 
 def _register_run(run_id: str) -> None:
+    _remember_run(run_id, select=True)
+
+
+def _remember_run(run_id: str, *, select: bool = False) -> None:
     run_ids: list[str] = st.session_state["run_ids"]
     if run_id not in run_ids:
         run_ids.insert(0, run_id)
-    st.session_state["selected_run_id"] = run_id
+    if select or not st.session_state.get("selected_run_id"):
+        st.session_state["selected_run_id"] = run_id
     st.session_state["seen_steps"].setdefault(run_id, 0)
     st.session_state["last_status"].setdefault(run_id, "")
     st.session_state["event_feed"].setdefault(run_id, [])
     st.session_state["shown_training"].setdefault(run_id, "")
+
+
+def _sync_known_runs(base_url: str) -> None:
+    active_statuses = [
+        "RECEIVED",
+        "CONTEXT_READY",
+        "PLAN_READY",
+        "EXECUTING",
+        "VERIFYING",
+        "PACKAGING",
+        "WAITING_APPROVAL",
+        "WAITING_PLAN_REVIEW",
+    ]
+    query = "&".join(f"status={item}" for item in active_statuses)
+    payload = _api_call(base_url, "GET", f"/runs?{query}&limit=100")
+    runs = payload.get("runs")
+    if not isinstance(runs, list):
+        return
+    for item in runs:
+        if not isinstance(item, dict):
+            continue
+        run_id = str(item.get("run_id") or "").strip()
+        if run_id:
+            _remember_run(run_id, select=False)
 
 
 def _submit_event(
@@ -360,6 +442,33 @@ def _extract_latest_improvement_strategy(run_payload: dict[str, Any]) -> dict[st
         if isinstance(candidate, dict):
             return _normalize_strategy_for_display(candidate)
     return None
+
+
+def _missing_improvement_strategy_reason(run_payload: dict[str, Any]) -> tuple[str, str]:
+    verification = _verification_for_display(run_payload)
+    run_status = str(run_payload.get("status") or "").strip().upper()
+    if not verification:
+        if run_status in {"RECEIVED", "CONTEXT_READY", "PLAN_READY", "EXECUTING"}:
+            return "info", "No improvement strategy yet: run has not reached verification."
+        return "warning", "No improvement strategy available: verification payload is missing."
+
+    quality_gate = verification.get("quality_gate") if isinstance(verification.get("quality_gate"), dict) else {}
+    quality_status = str(quality_gate.get("status") or "").strip().lower()
+    quality_reason = str(quality_gate.get("reason") or "").strip()
+
+    if quality_status == "passed":
+        detail = quality_reason or "quality gate passed"
+        return "info", f"No improvement strategy: {detail}."
+    if quality_status == "skipped":
+        detail = quality_reason or "quality gate skipped"
+        return "info", f"No improvement strategy: {detail}."
+    if quality_status == "failed":
+        detail = quality_reason or "quality gate failed"
+        return "warning", f"Improvement strategy expected but missing: {detail}."
+
+    if run_status in {"RECEIVED", "CONTEXT_READY", "PLAN_READY", "EXECUTING", "VERIFYING"}:
+        return "info", "No improvement strategy yet: verification is still in progress."
+    return "warning", "No improvement strategy available for this run."
 
 
 def _normalize_strategy_for_display(strategy: dict[str, Any]) -> dict[str, Any]:
@@ -760,6 +869,11 @@ def _render_kanban_view(
 def _render_improvement_strategy(run_payload: dict[str, Any]) -> None:
     strategy = _extract_latest_improvement_strategy(run_payload)
     if not strategy:
+        level, message = _missing_improvement_strategy_reason(run_payload)
+        if level == "warning":
+            st.warning(message)
+        else:
+            st.info(message)
         return
 
     st.subheader("Improvement Strategy")
@@ -824,6 +938,107 @@ def _render_improvement_strategy(run_payload: dict[str, Any]) -> None:
     artifact_path = strategy.get("artifact_path")
     if artifact_path:
         st.caption(f"Strategy artifact: `{artifact_path}`")
+
+
+def _render_task_intent(run_payload: dict[str, Any], task_payload: dict[str, Any]) -> None:
+    intent, source = _task_intent_payload(run_payload, task_payload)
+    if not isinstance(intent, dict) or not intent:
+        return
+    verification = _verification_for_display(run_payload) or {}
+
+    st.subheader("Task Intent")
+    if source:
+        st.caption(f"Source: `{source}`")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Task Family", _prettify_identifier(str(intent.get("task_family") or "")))
+    c2.metric("Metric Family", _prettify_identifier(str(intent.get("metric_family") or "")))
+    c3.metric("Primary Metric", str(intent.get("primary_metric_key") or "n/a"))
+    smoke_required = intent.get("real_dataset_smoke_required")
+    c4.metric("Real Dataset Smoke", "yes" if smoke_required is True else "no" if smoke_required is False else "n/a")
+
+    preferred = intent.get("preferred_metrics")
+    if isinstance(preferred, list) and preferred:
+        st.caption(f"Preferred metrics: {', '.join(str(item) for item in preferred if str(item).strip())}")
+
+    evidence = intent.get("evidence")
+    if isinstance(evidence, list) and evidence:
+        with st.expander("Intent Evidence", expanded=False):
+            for item in evidence:
+                st.write(f"- {item}")
+
+    validation = verification.get("intent_validation") if isinstance(verification, dict) else None
+    if isinstance(validation, dict) and validation:
+        status = str(validation.get("status") or "n/a")
+        reason = str(validation.get("reason") or "").strip()
+        if status == "failed":
+            st.warning(f"Intent validation failed: {reason}")
+        elif status == "passed":
+            st.caption(f"Intent validation passed: {reason}")
+        elif status == "skipped":
+            st.caption(f"Intent validation skipped: {reason}")
+
+
+def _render_structured_metrics(run_payload: dict[str, Any], task_payload: dict[str, Any]) -> None:
+    metrics_payload, source = _structured_metrics_payload(run_payload, task_payload)
+    if not isinstance(metrics_payload, dict) or not metrics_payload:
+        st.info("Structured metrics are not available yet. Preferred artifact: `metrics.json`.")
+        return
+
+    metric_aliases: list[tuple[str, str]] = [
+        ("eval_accuracy", "Eval Accuracy"),
+        ("test_accuracy", "Test Accuracy"),
+        ("val_accuracy", "Validation Accuracy"),
+        ("train_accuracy", "Train Accuracy"),
+        ("loss", "Loss"),
+        ("eval_loss", "Eval Loss"),
+        ("test_loss", "Test Loss"),
+        ("threshold_met", "Threshold Met"),
+        ("split_integrity_passed", "Split Integrity"),
+    ]
+    shown: set[str] = set()
+
+    st.subheader("Structured Metrics")
+    if source:
+        st.caption(f"Source: `{source}`")
+
+    metric_cols = st.columns(4)
+    card_index = 0
+    for key, label in metric_aliases:
+        if key not in metrics_payload:
+            continue
+        shown.add(key)
+        value = metrics_payload.get(key)
+        display = _format_metric_display(value, "%" if "accuracy" in key else None) if isinstance(value, (int, float)) else str(value)
+        metric_cols[card_index % 4].metric(label, display)
+        card_index += 1
+
+    remaining = {key: value for key, value in metrics_payload.items() if key not in shown}
+    if remaining:
+        with st.expander("All structured metrics", expanded=False):
+            st.json(remaining)
+
+
+def _render_metric_resolution(run_payload: dict[str, Any]) -> None:
+    verification = _verification_for_display(run_payload)
+    if not isinstance(verification, dict):
+        return
+    resolution = verification.get("metric_resolution")
+    if not isinstance(resolution, dict) or not resolution:
+        return
+
+    st.subheader("Metric Resolution")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Required", str(resolution.get("required_metric_key") or "n/a"))
+    c2.metric("Resolved From", str(resolution.get("resolved_metric_key") or "n/a"))
+    c3.metric("Mode", str(resolution.get("mode") or "n/a"))
+    c4.metric("Confidence", str(resolution.get("confidence") or "n/a"))
+    resolved_value = resolution.get("resolved_value")
+    if resolved_value is not None:
+        st.caption(f"Resolved value: `{resolved_value}`")
+    reason = str(resolution.get("reason") or "").strip()
+    if reason:
+        st.caption(reason)
 
 
 def _render_run_stream(base_url: str, run_id: str) -> None:
@@ -917,38 +1132,6 @@ def _render_run_stream(base_url: str, run_id: str) -> None:
             st.caption(f"Detected training marker: `{marker}`")
             st.caption("Model training is currently the active plan step.")
             st.caption("Training steps use an idle-timeout watchdog, not the default hard wall-clock timeout.")
-            live_stdout, live_stdout_path = _get_live_log_tail(
-                base_url,
-                run_id,
-                str(running_step.get("id") or ""),
-                "stdout",
-            )
-            live_stderr, live_stderr_path = _get_live_log_tail(
-                base_url,
-                run_id,
-                str(running_step.get("id") or ""),
-                "stderr",
-            )
-            if live_stdout or live_stderr:
-                with st.expander("Live training console", expanded=True):
-                    if live_stdout_path:
-                        st.caption(f"stdout: `{live_stdout_path}`")
-                    st.text_area(
-                        "stdout (live tail)",
-                        value=live_stdout or "no stdout yet",
-                        height=220,
-                        disabled=True,
-                        key=f"live-stdout-{run_id}-{running_step.get('id')}",
-                    )
-                    if live_stderr_path:
-                        st.caption(f"stderr: `{live_stderr_path}`")
-                    st.text_area(
-                        "stderr (live tail)",
-                        value=live_stderr or "no stderr yet",
-                        height=120,
-                        disabled=True,
-                        key=f"live-stderr-{run_id}-{running_step.get('id')}",
-                    )
             training_key = f"{running_step.get('id', '')}:{running_step.get('title', '')}"
             shown_training = st.session_state.get("shown_training", {})
             if shown_training.get(run_id) != training_key:
@@ -968,6 +1151,9 @@ def _render_run_stream(base_url: str, run_id: str) -> None:
     with timeline_tab:
         _render_plan(run_payload.get("plan_json"))
         _render_improvement_strategy(run_payload)
+        _render_task_intent(run_payload, task_payload)
+        _render_structured_metrics(run_payload, task_payload)
+        _render_metric_resolution(run_payload)
 
         st.subheader("Live Event Feed")
         st.caption("Feed shows the full chronological history of attempts across replans/cycles.")
@@ -1020,34 +1206,6 @@ def _render_run_stream(base_url: str, run_id: str) -> None:
                     st.caption(f"Step title: {step_title}")
                 if is_running:
                     st.info("Step is currently executing.")
-                    live_stdout, _ = _get_live_log_tail(
-                        base_url,
-                        run_id,
-                        str(step.get("step_id") or ""),
-                        "stdout",
-                    )
-                    live_stderr, _ = _get_live_log_tail(
-                        base_url,
-                        run_id,
-                        str(step.get("step_id") or ""),
-                        "stderr",
-                    )
-                    if live_stdout:
-                        st.text_area(
-                            "stdout (live tail)",
-                            value=live_stdout,
-                            height=180,
-                            disabled=True,
-                            key=f"stdout-live-{base_key}",
-                        )
-                    if live_stderr:
-                        st.text_area(
-                            "stderr (live tail)",
-                            value=live_stderr,
-                            height=120,
-                            disabled=True,
-                            key=f"stderr-live-{base_key}",
-                        )
                 else:
                     used_skills, skill_sources = _parse_skill_context(step.get("command"))
                     st.markdown(f"**Skills context:** {'used' if used_skills else 'not used'}")
@@ -1168,13 +1326,18 @@ def main() -> None:
             except Exception as exc:
                 st.error(str(exc))
 
+    try:
+        _sync_known_runs(base_url)
+    except Exception:
+        pass
+
     st.subheader("Submit Task")
     with st.form("submit-event-form", clear_on_submit=False):
         workspace_id = st.text_input("workspace_id", value="demo")
         goal = st.text_area("goal", value="Train a simple MNIST baseline and report metrics")
         constraints_raw = st.text_area(
             "constraints (one per line)",
-            value="Use PyTorch.\nRun quick smoke test first.\nSave metrics to markdown.",
+            value="Use PyTorch.\nRun quick smoke test first.\nWrite structured metrics to metrics.json.\nMarkdown report optional.",
         )
         priority = st.selectbox("priority", options=["high", "normal", "low"], index=1)
         execution_mode_options = ["plan_execute", "ralph_story"]

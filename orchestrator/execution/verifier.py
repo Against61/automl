@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from orchestrator.config import Settings
-from orchestrator.execution.metric_parsing import (
-    extract_metrics_from_text,
-    extract_numeric_metrics,
-    extract_report_context_flags,
-    extract_split_integrity_flags,
-    normalize_metric_key,
-)
+from orchestrator.execution.intent_validation import IntentValidationSupport
+from orchestrator.execution.metric_parsing import extract_metrics_from_text
+from orchestrator.execution.workspace_metrics_reader import WorkspaceMetricsReader
 
 
 @dataclass(slots=True)
@@ -23,20 +18,36 @@ class VerificationResult:
     passed: bool
     commands: list[dict[str, str | int | bool]]
     metrics: dict[str, float | int | str | bool]
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 class Verifier:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.workspace_metrics_reader = WorkspaceMetricsReader()
+        self.intent_validation_support = IntentValidationSupport()
 
-    async def run(self, workspace_path: Path) -> VerificationResult:
+    async def run(
+        self,
+        workspace_path: Path,
+        *,
+        task: dict[str, Any] | None = None,
+        story_id: str | None = None,
+    ) -> VerificationResult:
         commands = self.settings.verify_command_list
         if not commands:
+            metrics = self._read_workspace_metrics(workspace_path)
             return VerificationResult(
                 status="passed",
                 passed=True,
                 commands=[],
-                metrics=self._read_workspace_metrics(workspace_path),
+                metrics=metrics,
+                details=self._build_intent_validation_details(
+                    metrics=metrics,
+                    task=task,
+                    workspace_path=workspace_path,
+                    story_id=story_id,
+                ),
             )
 
         summary: list[dict[str, str | int | bool]] = []
@@ -78,6 +89,12 @@ class Verifier:
                     passed=False,
                     commands=summary,
                     metrics=metrics,
+                    details=self._build_intent_validation_details(
+                        metrics=metrics,
+                        task=task,
+                        workspace_path=workspace_path,
+                        story_id=story_id,
+                    ),
                 )
 
         return VerificationResult(
@@ -85,114 +102,75 @@ class Verifier:
             passed=True,
             commands=summary,
             metrics=metrics,
+            details=self._build_intent_validation_details(
+                metrics=metrics,
+                task=task,
+                workspace_path=workspace_path,
+                story_id=story_id,
+            ),
         )
 
     def _extract_metrics_from_text(self, text: str) -> dict[str, float | int | str | bool]:
         return extract_metrics_from_text(text)
 
     def _read_workspace_metrics(self, workspace_path: Path) -> dict[str, float | int | str | bool]:
-        metrics: dict[str, float | int | str | bool] = {}
-        candidates: list[Path] = [
-            workspace_path / "metrics.md",
-            workspace_path / "results.json",
-            workspace_path / "metrics.json",
-        ]
-        # Best-effort discovery: many runs persist metrics under custom markdown/json names.
-        for pattern in ("*metrics*.md", "*metrics*.markdown", "*metrics*.json"):
-            for path in sorted(workspace_path.glob(pattern)):
-                if path not in candidates:
-                    candidates.append(path)
-
-        for path in candidates:
-            if not path.is_file():
-                continue
-            if path.suffix.lower() == ".json":
-                metrics.update(self._read_json_metrics(path))
-            else:
-                try:
-                    text = path.read_text(encoding="utf-8")
-                except OSError:
-                    continue
-                metrics.update(self._extract_metrics_from_text(text))
-                metrics.update(self._extract_metrics_from_markdown_table(text))
-                metrics.update(extract_split_integrity_flags(text))
-                metrics.update(extract_report_context_flags(text))
-
-        return metrics
+        return self.workspace_metrics_reader.read_workspace_metrics(workspace_path)
 
     def _extract_metrics_from_markdown_table(self, text: str) -> dict[str, float | int | str | bool]:
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        metrics: dict[str, float | int | str | bool] = {}
-        idx = 0
-        while idx + 2 < len(lines):
-            header = lines[idx]
-            sep = lines[idx + 1]
-            if not (header.startswith("|") and sep.startswith("|")):
-                idx += 1
-                continue
-            if "---" not in sep:
-                idx += 1
-                continue
-
-            header_cells = [cell.strip().lower().replace(" ", "_") for cell in header.strip("|").split("|")]
-            data_rows: list[list[str]] = []
-            row_idx = idx + 2
-            while row_idx < len(lines) and lines[row_idx].startswith("|"):
-                cells = [cell.strip() for cell in lines[row_idx].strip("|").split("|")]
-                if len(cells) == len(header_cells):
-                    data_rows.append(cells)
-                row_idx += 1
-
-            if data_rows:
-                if self._looks_like_key_value_metric_table(header_cells):
-                    name_idx = 0
-                    value_idx = 1
-                    for row in data_rows:
-                        metric_name = normalize_metric_key(row[name_idx])
-                        if not metric_name:
-                            continue
-                        parsed = self._parse_numeric_cell(row[value_idx])
-                        if parsed is None:
-                            continue
-                        metrics[metric_name] = parsed
-                else:
-                    last_row = data_rows[-1]
-                    for key, raw in zip(header_cells, last_row):
-                        parsed = self._parse_numeric_cell(raw)
-                        if parsed is None:
-                            continue
-                        metrics[key] = parsed
-
-            idx = row_idx
-        return metrics
+        return self.workspace_metrics_reader.extract_metrics_from_markdown_table(text)
 
     def _looks_like_key_value_metric_table(self, header_cells: list[str]) -> bool:
-        if len(header_cells) < 2:
-            return False
-        first = header_cells[0]
-        second = header_cells[1]
-        return first in {"metric", "name", "measure", "key"} and second in {"value", "score", "metric_value"}
+        return self.workspace_metrics_reader.looks_like_key_value_metric_table(header_cells)
 
     def _parse_numeric_cell(self, raw: str) -> float | int | None:
-        normalized = raw.replace("**", "").replace("__", "").strip()
-        is_percent = "%" in normalized
-        normalized = normalized.replace("%", "").strip()
-        if not normalized:
-            return None
-        if not re.match(r"^[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$", normalized):
-            return None
-        value = float(normalized)
-        if is_percent and value > 1.0:
-            value = value / 100.0
-        if value.is_integer():
-            return int(value)
-        return value
+        return self.workspace_metrics_reader.parse_numeric_cell(raw)
 
     def _read_json_metrics(self, path: Path) -> dict[str, float | int | str | bool]:
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        if not isinstance(raw, dict):
-            return {}
-        return extract_numeric_metrics(raw)
+        return self.workspace_metrics_reader.read_json_metrics(path)
+
+    def _extract_json_metrics_payload(self, raw: object) -> dict[str, float | int | str | bool]:
+        return self.workspace_metrics_reader.extract_json_metrics_payload(raw)
+
+    def _collect_json_metrics_recursive(
+        self,
+        raw: object,
+        metrics: dict[str, float | int | str | bool],
+    ) -> None:
+        self.workspace_metrics_reader.collect_json_metrics_recursive(raw, metrics)
+
+    def _flatten_metric_mapping(
+        self,
+        parent_key: str,
+        mapping: dict[str, object],
+        metrics: dict[str, float | int | str | bool],
+    ) -> None:
+        self.workspace_metrics_reader.flatten_metric_mapping(parent_key, mapping, metrics)
+
+    def _extract_split_flags_from_mapping(
+        self,
+        mapping: dict[str, object],
+        metrics: dict[str, float | int | str | bool],
+    ) -> None:
+        self.workspace_metrics_reader.extract_split_flags_from_mapping(mapping, metrics)
+
+    def _extract_report_flags_from_mapping(
+        self,
+        mapping: dict[str, object],
+        metrics: dict[str, float | int | str | bool],
+    ) -> None:
+        self.workspace_metrics_reader.extract_report_flags_from_mapping(mapping, metrics)
+
+    def _build_intent_validation_details(
+        self,
+        *,
+        metrics: dict[str, float | int | str | bool],
+        task: dict[str, Any] | None,
+        workspace_path: Path,
+        story_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.intent_validation_support.build_intent_validation_details(
+            metrics=metrics,
+            task=task,
+            workspace_path=workspace_path,
+            story_id=story_id,
+        )

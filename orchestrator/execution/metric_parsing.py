@@ -118,6 +118,21 @@ def normalize_metric_key(raw: str) -> str:
         "val_acc": "val_accuracy",
         "test_acc": "test_accuracy",
         "train_acc": "train_accuracy",
+        "eval_acc": "eval_accuracy",
+        "evaluation_acc": "eval_accuracy",
+        "held_out_accuracy": "eval_accuracy",
+        "held_out_acc": "eval_accuracy",
+        "held_out_eval_accuracy": "eval_accuracy",
+        "held_out_test_accuracy": "test_accuracy",
+        "out_evaluation_accuracy": "eval_accuracy",
+        "intersection_over_union": "iou",
+        "mean_intersection_over_union": "mean_iou",
+        "mean_intersection_union": "mean_iou",
+        "m_iou": "miou",
+        "mean_iou_score": "mean_iou",
+        "jaccard": "iou",
+        "jaccard_index": "iou",
+        "jaccard_score": "iou",
     }
     return aliases.get(normalized, normalized)
 

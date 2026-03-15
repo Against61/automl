@@ -47,7 +47,7 @@ async def run_loop(args: argparse.Namespace) -> int:
     bus = InMemoryEventBus()
     await bus.initialize()
 
-    planner = make_planner(settings)
+    planner = make_planner()
     policy_engine = PolicyEngine(settings)
     ralph_backlog = RalphBacklogService(
         prd_file_name=settings.ralph_prd_file_name,

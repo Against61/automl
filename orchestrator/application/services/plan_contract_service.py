@@ -32,6 +32,7 @@ class PlanContractService:
         if not specs:
             return True, "no expected artifacts declared"
         intent = self._coerce_intent(getattr(step, "step_intent", StepIntent.general))
+        specs = self._apply_default_metrics_specs(specs, intent)
 
         reason_parts: list[str] = []
         failure = False
@@ -94,6 +95,78 @@ class PlanContractService:
             return True, "contract checks passed"
         return False, "; ".join(reason_parts)
 
+    def _apply_default_metrics_specs(self, specs: list[ArtifactSpec], intent: StepIntent) -> list[ArtifactSpec]:
+        if intent not in {StepIntent.run_training, StepIntent.verify_metrics}:
+            return specs
+
+        copied = [spec.model_copy(deep=True) for spec in specs]
+        metric_spec: ArtifactSpec | None = None
+        for spec in copied:
+            if spec.kind == ArtifactKind.metrics:
+                metric_spec = spec
+                break
+
+        if metric_spec is None:
+            copied.append(
+                ArtifactSpec(
+                    path="metrics.json",
+                    kind=ArtifactKind.metrics,
+                    must_exist=True,
+                    must_be_nonempty=True,
+                )
+            )
+            return copied
+
+        if not metric_spec.path:
+            metric_spec.path = "metrics.json"
+        metric_spec.must_exist = True
+        metric_spec.must_be_nonempty = True
+        return copied
+
+    def _metrics_candidate_paths(
+        self,
+        *,
+        specs: list[ArtifactSpec],
+        workspace_path: Path,
+        result: Any,
+        include_recent: bool = True,
+    ) -> list[Path]:
+        candidates: list[Path] = []
+        seen: set[Path] = set()
+
+        def _add(target: Path | None) -> None:
+            if target is None:
+                return
+            try:
+                resolved = target.resolve()
+            except OSError:
+                return
+            if resolved in seen or not resolved.is_file():
+                return
+            try:
+                if not resolved.is_relative_to(workspace_path.resolve()):
+                    return
+            except ValueError:
+                return
+            seen.add(resolved)
+            candidates.append(resolved)
+
+        for spec in specs:
+            if not self._is_metrics_like_spec(spec) or not spec.path:
+                continue
+            _add(self._resolve_target(spec.path, workspace_path))
+
+        for rel_path in self._normalized_changed_paths(getattr(result, "files_changed", None), workspace_path):
+            target = workspace_path / rel_path
+            if self._looks_like_metrics_artifact(target):
+                _add(target)
+
+        if include_recent:
+            for rel_path in self._recent_metrics_artifacts(workspace_path):
+                _add(workspace_path / rel_path)
+
+        return candidates
+
     def _relax_metrics_path_misses(
         self,
         *,
@@ -109,13 +182,12 @@ class PlanContractService:
             return missing_paths
         if intent not in {StepIntent.run_training, StepIntent.verify_metrics}:
             return missing_paths
-        metrics_candidates = self._recent_metrics_artifacts(workspace_path)
-        if len(metrics_candidates) != 1:
-            return missing_paths
-        candidate = metrics_candidates[0]
-
-        changed_paths = self._normalized_changed_paths(getattr(result, "files_changed", None), workspace_path)
-        if changed_paths and candidate not in changed_paths:
+        metrics_candidates = self._metrics_candidate_paths(
+            specs=specs,
+            workspace_path=workspace_path,
+            result=result,
+        )
+        if not metrics_candidates:
             return missing_paths
 
         spec_by_path = {
@@ -204,30 +276,16 @@ class PlanContractService:
         candidate_paths: list[Path] = []
         seen: set[Path] = set()
 
-        for spec in specs:
-            if not self._is_metrics_like_spec(spec) or not spec.path:
-                continue
-            target = self._resolve_target(spec.path, workspace_path)
-            if target is None or not target.is_file():
-                continue
-            resolved = target.resolve()
+        for candidate in self._metrics_candidate_paths(
+            specs=specs,
+            workspace_path=workspace_path,
+            result=result,
+        ):
+            resolved = candidate.resolve()
             if resolved in seen:
                 continue
             seen.add(resolved)
             candidate_paths.append(resolved)
-
-        if not candidate_paths:
-            for rel_path in self._normalized_changed_paths(getattr(result, "files_changed", None), workspace_path):
-                target = workspace_path / rel_path
-                if not target.is_file():
-                    continue
-                if not self._looks_like_metrics_artifact(target):
-                    continue
-                resolved = target.resolve()
-                if resolved in seen:
-                    continue
-                seen.add(resolved)
-                candidate_paths.append(resolved)
 
         for path in candidate_paths:
             try:
@@ -253,6 +311,14 @@ class PlanContractService:
             return None
 
         changed_paths = self._normalized_changed_paths(getattr(result, "files_changed", None), workspace_path)
+        fallback_candidates = {
+            str(path.relative_to(workspace_path.resolve()))
+            for path in self._metrics_candidate_paths(
+                specs=specs,
+                workspace_path=workspace_path,
+                result=result,
+            )
+        }
         for spec in specs:
             if not spec.path or not self._is_metrics_like_spec(spec):
                 continue
@@ -264,6 +330,8 @@ class PlanContractService:
             except (OSError, ValueError):
                 continue
             if rel_path in changed_paths:
+                continue
+            if rel_path not in fallback_candidates and fallback_candidates:
                 continue
             try:
                 artifact_mtime = target.stat().st_mtime
@@ -388,10 +456,10 @@ class PlanContractService:
             if target.exists():
                 continue
 
-            if self._resolve_fuzzy_match(target, workspace_root):
+            if self.strictness != "strict" and self._resolve_fuzzy_match(target, workspace_root):
                 continue
 
-            if not path.is_absolute() and "/" not in normalized and "\\" not in normalized:
+            if self.strictness != "strict" and not path.is_absolute() and "/" not in normalized and "\\" not in normalized:
                 matches = [
                     match
                     for match in workspace_root.rglob(normalized)
@@ -539,12 +607,11 @@ class PlanContractService:
             }
             if expected_keys:
                 metric_text_parts = [output]
-                for spec in metrics_specs:
-                    if not spec.path:
-                        continue
-                    target = self._resolve_target(spec.path, workspace_path)
-                    if target is None or not target.exists():
-                        continue
+                for target in self._metrics_candidate_paths(
+                    specs=metrics_specs,
+                    workspace_path=workspace_path,
+                    result=result,
+                ):
                     try:
                         metric_text_parts.append(target.read_text(encoding="utf-8", errors="ignore"))
                     except OSError:

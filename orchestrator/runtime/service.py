@@ -36,25 +36,25 @@ class OrchestratorService:
             consumer_group=settings.redis_consumer_group,
             consumer_name=settings.redis_consumer_name,
         )
-        self.planner = make_planner(settings)
-        self.policy_engine = PolicyEngine(settings)
-        self.ralph_backlog = RalphBacklogService(
+        planner = make_planner()
+        policy_engine = PolicyEngine(settings)
+        ralph_backlog = RalphBacklogService(
             prd_file_name=settings.ralph_prd_file_name,
             progress_file_name=settings.ralph_progress_file_name,
         )
-        self.codex_runner = CodexRunner(settings)
-        self.verifier = Verifier(settings)
-        self.artifact_publisher = ArtifactPublisher(self.db, settings.runs_root)
+        codex_runner = CodexRunner(settings)
+        verifier = Verifier(settings)
+        artifact_publisher = ArtifactPublisher(self.db, settings.runs_root)
         self.session = SessionManager(
             settings=settings,
             db=self.db,
             bus=self.bus,
-            planner=self.planner,
-            policy_engine=self.policy_engine,
-            ralph_backlog=self.ralph_backlog,
-            codex_runner=self.codex_runner,
-            verifier=self.verifier,
-            artifact_publisher=self.artifact_publisher,
+            planner=planner,
+            policy_engine=policy_engine,
+            ralph_backlog=ralph_backlog,
+            codex_runner=codex_runner,
+            verifier=verifier,
+            artifact_publisher=artifact_publisher,
         )
         self._tasks: list[asyncio.Task[Any]] = []
         self._run_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -100,7 +100,6 @@ class OrchestratorService:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "worker_concurrency": self.settings.worker_concurrency,
             "queue_size": self._run_queue.qsize(),
-            "ddd_use_cases_enabled": self.settings.ddd_use_cases_enabled,
         }
 
     async def _recover_nonterminal_runs(self) -> None:

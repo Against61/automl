@@ -46,16 +46,6 @@ class SessionManager:
         verifier: Verifier,
         artifact_publisher: ArtifactPublisher,
     ) -> None:
-        self.settings = settings
-        self.db = db
-        self.bus = bus
-        self.planner = planner
-        self.policy_engine = policy_engine
-        self.ralph_backlog = ralph_backlog
-        self.codex_runner = codex_runner
-        self.verifier = verifier
-        self.artifact_publisher = artifact_publisher
-
         self._process_run_uc = ProcessRunTickUseCase(
             settings=settings,
             db=db,

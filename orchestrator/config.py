@@ -37,8 +37,6 @@ class Settings(BaseSettings):
     important_files: str = "README.md,pyproject.toml"
 
     llm_provider: str = "openai"
-    planner_mode: str = "llm_plan"
-    openai_model: str = "gpt-4.1-mini"
     openai_embedding_model: str = "text-embedding-3-small"
     openai_api_key: str | None = None
     codex_model: str = "gpt-5.3-codex-spark"
@@ -52,7 +50,6 @@ class Settings(BaseSettings):
     plan_review_enabled: bool = True
     plan_review_manual_fallback: bool = True
     contract_strictness: str = "balanced"
-    ddd_use_cases_enabled: bool = True
     experiment_history_context_limit: int = Field(default=12, ge=1, le=100)
     ralph_prd_file_name: str = "prd.json"
     ralph_progress_file_name: str = "progress.txt"

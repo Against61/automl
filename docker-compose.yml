@@ -15,7 +15,6 @@ services:
       WORKSPACE_ROOT: /app/workspace
       RUNS_ROOT: /app/workspace/runs
       LLM_PROVIDER: ${LLM_PROVIDER:-stub}
-      PLANNER_MODE: ${PLANNER_MODE:-llm_plan}
       CONTRACT_STRICTNESS: ${CONTRACT_STRICTNESS:-balanced}
       RALPH_PRD_FILE_NAME: ${RALPH_PRD_FILE_NAME:-prd.json}
       RALPH_PROGRESS_FILE_NAME: ${RALPH_PROGRESS_FILE_NAME:-progress.txt}

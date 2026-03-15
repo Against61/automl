@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,172 @@ def test_read_workspace_metrics_parses_metric_value_table(tmp_path: Path):
     metrics = verifier._read_workspace_metrics(workspace)
     assert metrics.get("final_test_accuracy") == pytest.approx(0.9224, rel=1e-6)
     assert metrics.get("final_test_loss") == pytest.approx(0.381, rel=1e-6)
+
+
+def test_read_workspace_metrics_prefers_structured_metrics_json_over_markdown(tmp_path: Path):
+    verifier = _make_verifier(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "metrics.json").write_text(
+        json.dumps(
+            {
+                "metrics": {
+                    "eval_accuracy": 0.931,
+                    "train_accuracy": 0.980333,
+                    "loss": 0.244,
+                },
+                "split": {"disjoint_from_training": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "metrics.md").write_text(
+        "\n".join(
+            [
+                "# Metrics",
+                "",
+                "- Eval Accuracy: 75.00%",
+                "- Train Accuracy: 99.00%",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = verifier._read_workspace_metrics(workspace)
+    assert metrics.get("eval_accuracy") == pytest.approx(0.931, rel=1e-6)
+    assert metrics.get("train_accuracy") == pytest.approx(0.980333, rel=1e-6)
+    assert metrics.get("loss") == pytest.approx(0.244, rel=1e-6)
+    assert metrics.get("split_integrity_passed") is True
+    assert metrics.get("split_leakage_detected") is False
+
+
+def test_read_workspace_metrics_discovers_nested_metrics_json(tmp_path: Path):
+    verifier = _make_verifier(tmp_path)
+    workspace = tmp_path / "workspace"
+    metrics_dir = workspace / "smoke_metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    (metrics_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "accuracy": 0.4375,
+                "eval_accuracy": 0.4375,
+                "loss": 1.988,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = verifier._read_workspace_metrics(workspace)
+    assert metrics.get("accuracy") == pytest.approx(0.4375, rel=1e-6)
+    assert metrics.get("eval_accuracy") == pytest.approx(0.4375, rel=1e-6)
+    assert metrics.get("loss") == pytest.approx(1.988, rel=1e-6)
+
+
+def test_read_workspace_metrics_recursively_extracts_nested_iou_metrics(tmp_path: Path):
+    verifier = _make_verifier(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "metrics.json").write_text(
+        json.dumps(
+            {
+                "split_integrity_passed": True,
+                "smoke_results": {
+                    "train_mean_iou": 0.71,
+                    "eval_mean_iou": 0.63,
+                    "train_per_class_iou": {"shoe": 0.81, "objects": 0.61},
+                    "eval_per_class_iou": {"shoe": 0.72, "objects": 0.54},
+                    "smoke_split_integrity": {"train_eval_disjoint": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = verifier._read_workspace_metrics(workspace)
+    assert metrics.get("train_mean_iou") == pytest.approx(0.71, rel=1e-6)
+    assert metrics.get("eval_mean_iou") == pytest.approx(0.63, rel=1e-6)
+    assert metrics.get("train_per_class_iou_shoe") == pytest.approx(0.81, rel=1e-6)
+    assert metrics.get("eval_per_class_iou_objects") == pytest.approx(0.54, rel=1e-6)
+    assert metrics.get("split_integrity_passed") is True
+    assert metrics.get("split_leakage_detected") is False
+
+
+def test_read_workspace_metrics_preserves_planning_only_flags_from_json(tmp_path: Path):
+    verifier = _make_verifier(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "metrics.json").write_text(
+        json.dumps(
+            {
+                "planning_only_report_detected": True,
+                "training_deferred": True,
+                "dataset_type": "coco",
+                "split_integrity_passed": True,
+                "class_count": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = verifier._read_workspace_metrics(workspace)
+    assert metrics.get("planning_only_report_detected") is True
+    assert metrics.get("training_deferred") is True
+    assert metrics.get("dataset_type") == "coco"
+    assert metrics.get("split_integrity_passed") is True
+
+
+@pytest.mark.asyncio
+async def test_verifier_adds_intent_validation_details_when_metrics_primary_metric_matches(tmp_path: Path):
+    verifier = _make_verifier(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "metrics.json").write_text(
+        json.dumps(
+            {
+                "task_family": "segmentation",
+                "primary_metric_key": "iou",
+                "eval_mean_iou": 0.62,
+            }
+        ),
+        encoding="utf-8",
+    )
+    task = {
+        "goal": "Train segmentation model on coco dataset",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: iou >= 95%"]),
+    }
+
+    result = await verifier.run(workspace, task=task, story_id="US-002")
+
+    assert result.details["task_intent"]["task_family"] == "segmentation"
+    assert result.details["intent_validation"]["status"] == "passed"
+    assert result.metrics["metric_intent_drift_detected"] is False
+
+
+@pytest.mark.asyncio
+async def test_verifier_marks_metric_intent_drift_when_reported_primary_metric_conflicts(tmp_path: Path):
+    verifier = _make_verifier(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "metrics.json").write_text(
+        json.dumps(
+            {
+                "task_family": "segmentation",
+                "primary_metric_key": "accuracy",
+                "eval_accuracy": 0.99,
+            }
+        ),
+        encoding="utf-8",
+    )
+    task = {
+        "goal": "Train segmentation model on coco dataset",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: iou >= 95%"]),
+    }
+
+    result = await verifier.run(workspace, task=task)
+
+    assert result.details["intent_validation"]["status"] == "failed"
+    assert "does not match" in result.details["intent_validation"]["reason"]
+    assert result.metrics["metric_intent_drift_detected"] is True
 
 
 def test_read_workspace_metrics_detects_split_leakage_from_report_text(tmp_path: Path):

@@ -32,22 +32,18 @@ pip install -e .[dev]
 
 2. Set environment in `.env` (create it if needed).
 Set `OPENAI_API_KEY` for OpenAI mode, or switch to `LLM_PROVIDER=stub` for local/offline development.
-Planner behavior is controlled by `PLANNER_MODE`:
-- `llm_plan` (default): planner builds structured multi-step plan via LLM/stub planner.
-- `codex_only`: no planner reasoning; orchestrator emits one synthetic Codex execution step.
 Task execution mode is controlled per event payload:
 - `execution_mode=plan_execute` (default flow)
 - `execution_mode=ralph_story` (RALPH backlog flow from `prd.json`)
-For `ralph_story`, planning is always forced through a structured planner path (multi-step), even if global
-`PLANNER_MODE=codex_only`.
+Planner behavior is fixed:
+- `plan_execute` uses `CodexOnlyPlanner`
+- `ralph_story` uses structured `StubPlanner` through Ralph
 For non-interactive orchestration use `CODEX_CLI_CMD="codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check"` (default in compose).
 If you want Codex CLI to use a fixed model, set `CODEX_MODEL` (example: `gpt-5.3-codex-spark`).
-If you want Planner to use API key but Codex to use only `codex login` session, set:
+If you want Codex to use only `codex login` session while keeping `OPENAI_API_KEY` available for other services, set:
 `CODEX_USE_OPENAI_API_KEY=false`.
 If shell Python steps fail with missing imports (for example `torch`), runner can auto-install once:
 `AUTO_INSTALL_MISSING_PYTHON_MODULES=true` (enabled by default).
-DDD use-case layer toggle (currently on by default):
-`DDD_USE_CASES_ENABLED=true`.
 If a Python script fails with `argparse` unknown flags (for example `--smoke_test`), runner auto-tries:
 flag normalization (`--smoke-test`) and then drops unknown flags once.
 On non-infrastructure execution failures, orchestrator can auto-replan the run instead of immediate stop:

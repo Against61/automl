@@ -55,6 +55,7 @@ class ImprovementStrategyService:
         latest_hyperparameters = hyperparameter_attempts[-1].get("hyperparameters", {}) if hyperparameter_attempts else {}
         available_skills = self._discover_workspace_skills(workspace_path)
         experiment_attempts = [item for item in (experiment_history or []) if isinstance(item, dict)]
+        compact_experiment_attempts = [self._compact_experiment_attempt(item) for item in experiment_attempts]
         diagnosis = self._diagnose(
             metric_gap=metric_gap,
             overfit_gap=overfit_gap,
@@ -98,7 +99,7 @@ class ImprovementStrategyService:
                 "attempt_number": attempt_number,
                 "latest_hyperparameters": latest_hyperparameters,
                 "hyperparameter_attempts": hyperparameter_attempts[-8:],
-                "experiment_attempts": experiment_attempts[-8:],
+                "experiment_attempts": compact_experiment_attempts[-8:],
                 "last_metrics": metrics,
             },
             "candidate_interventions": candidates,
@@ -409,6 +410,35 @@ class ImprovementStrategyService:
         )
         with path.open("a", encoding="utf-8") as handle:
             handle.write(f"{line}\n")
+
+    def _compact_experiment_attempt(self, item: dict[str, Any]) -> dict[str, Any]:
+        strategy = item.get("strategy") if isinstance(item.get("strategy"), dict) else {}
+        chosen = strategy.get("chosen_intervention") if isinstance(strategy.get("chosen_intervention"), dict) else {}
+        diagnosis = strategy.get("diagnosis") if isinstance(strategy.get("diagnosis"), dict) else {}
+        return {
+            "run_id": item.get("run_id"),
+            "attempt": item.get("attempt"),
+            "quality_status": item.get("quality_status"),
+            "quality_reason": item.get("quality_reason"),
+            "metrics": item.get("metrics") if isinstance(item.get("metrics"), dict) else {},
+            "hyperparameters": item.get("hyperparameters") if isinstance(item.get("hyperparameters"), dict) else {},
+            "skill_paths": list(item.get("skill_paths") or [])[:4] if isinstance(item.get("skill_paths"), list) else [],
+            "strategy": {
+                "chosen_intervention_id": strategy.get("chosen_intervention_id") or chosen.get("id"),
+                "diagnosis": {
+                    "pattern": diagnosis.get("pattern"),
+                    "confidence": diagnosis.get("confidence"),
+                },
+                "chosen_intervention": {
+                    "id": chosen.get("id"),
+                    "type": chosen.get("type"),
+                    "skill_paths": list(chosen.get("skill_paths") or [])[:4]
+                    if isinstance(chosen.get("skill_paths"), list)
+                    else [],
+                },
+            },
+            "created_at": item.get("created_at"),
+        }
 
     def _to_float(self, value: Any) -> float | None:
         if isinstance(value, bool):

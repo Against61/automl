@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from orchestrator.persistence.schemas import (
     ApproveRequest,
@@ -12,6 +11,7 @@ from orchestrator.persistence.schemas import (
     EventCreateRequest,
     HealthResponse,
     ReadyResponse,
+    RunStatus,
 )
 
 router = APIRouter()
@@ -22,34 +22,6 @@ def get_service(request: Request):
     if service is None:
         raise RuntimeError("service is not initialized")
     return service
-
-
-def _safe_log_tail_text(path: Path, max_bytes: int) -> str:
-    if max_bytes <= 0:
-        max_bytes = 32768
-    with path.open("rb") as handle:
-        handle.seek(0, 2)
-        size = handle.tell()
-        handle.seek(max(size - max_bytes, 0))
-        raw = handle.read()
-    return raw.decode("utf-8", errors="ignore")
-
-
-def _resolve_live_log_path(run_dir: Path, step_id: str, stream: str) -> Path | None:
-    if not step_id or "/" in step_id or "\\" in step_id:
-        return None
-    normalized_stream = "stderr" if str(stream).lower() == "stderr" else "stdout"
-    direct = run_dir / f"{step_id}.{normalized_stream}.log"
-    if direct.exists():
-        return direct
-    candidates = sorted(
-        run_dir.glob(f"{step_id}-*.{normalized_stream}.log"),
-        key=lambda item: item.stat().st_mtime if item.exists() else 0.0,
-    )
-    if candidates:
-        return candidates[-1]
-    return None
-
 
 @router.get("/healthz", response_model=HealthResponse)
 async def healthz(request: Request) -> HealthResponse:
@@ -62,6 +34,40 @@ async def readyz(request: Request) -> ReadyResponse:
     service = get_service(request)
     details = service.readiness()
     return ReadyResponse(status="ready" if details.get("ready") else "not_ready", details=details)
+
+
+@router.get("/runs")
+async def list_runs(
+    request: Request,
+    status: list[str] | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+) -> dict:
+    service = get_service(request)
+    statuses: list[RunStatus] | None = None
+    if status:
+        statuses = []
+        for item in status:
+            normalized = str(item or "").strip()
+            try:
+                statuses.append(RunStatus(normalized))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"invalid status: {normalized}") from exc
+    runs = await service.db.list_runs(limit=limit, statuses=statuses)
+    return {
+        "runs": [
+            {
+                "run_id": run.run_id,
+                "task_id": run.task_id,
+                "workspace_id": run.workspace_id,
+                "priority": run.priority.value,
+                "status": run.status.value,
+                "created_at": run.created_at.isoformat(),
+                "updated_at": run.updated_at.isoformat(),
+                "error_message": run.error_message,
+            }
+            for run in runs
+        ]
+    }
 
 
 @router.get("/runs/{run_id}")
@@ -108,37 +114,6 @@ async def get_artifacts(run_id: str, request: Request) -> dict:
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
     return {"run_id": run_id, "artifacts": await service.db.get_artifacts(run_id)}
-
-
-@router.get("/runs/{run_id}/live-log")
-async def get_live_log(
-    run_id: str,
-    request: Request,
-    step_id: str,
-    stream: str = "stdout",
-    max_bytes: int = 32768,
-) -> dict:
-    service = get_service(request)
-    run = await service.db.get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="run not found")
-    run_dir = service.settings.runs_root / run_id
-    if not run_dir.exists():
-        return {"run_id": run_id, "step_id": step_id, "stream": stream, "content": "", "path": None}
-    path = _resolve_live_log_path(run_dir, step_id, stream)
-    if path is None or not path.exists():
-        return {"run_id": run_id, "step_id": step_id, "stream": stream, "content": "", "path": None}
-    try:
-        content = _safe_log_tail_text(path, max_bytes=max_bytes)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"failed to read log tail: {exc}") from exc
-    return {
-        "run_id": run_id,
-        "step_id": step_id,
-        "stream": "stderr" if str(stream).lower() == "stderr" else "stdout",
-        "content": content,
-        "path": path.as_posix(),
-    }
 
 
 @router.post("/event")

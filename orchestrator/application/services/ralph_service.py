@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from orchestrator.application.services.quality_gate_service import QualityGateService
+from orchestrator.application.services.workspace_snapshot_service import WorkspaceSnapshotService
 from orchestrator.config import Settings
 from orchestrator.execution.verifier import VerificationResult
 from orchestrator.persistence.db import Database
@@ -41,6 +41,7 @@ class RalphScenarioService:
         self.db = db
         self.bus = bus
         self.quality_gate_service = quality_gate_service
+        self.workspace_snapshot_service = WorkspaceSnapshotService()
 
     def resolve_next_story(self, workspace_path: Path, explicit_story_id: str | None = None) -> RalphStory | None:
         prd = self.backlog.load_prd(workspace_path)
@@ -235,62 +236,11 @@ class RalphScenarioService:
         return any(str(item).strip().startswith("PRIMARY_USER_GOAL:") for item in constraints)
 
     def _ralph_workspace_snapshot_path(self, workspace_path: Path) -> Path:
-        return workspace_path / _RALPH_WORKSPACE_SNAPSHOT_FILE
+        return self.workspace_snapshot_service.ralph_snapshot_path(workspace_path)
 
     def _build_workspace_tree_snapshot(self, workspace_path: Path, max_depth: int = 4) -> str:
-        root = workspace_path.resolve()
-        if not root.is_dir():
-            return ""
-
-        ignore_dirs = {
-            ".git",
-            ".venv",
-            "artifacts",
-            "runs",
-            "node_modules",
-            "__pycache__",
-            ".mypy_cache",
-            ".pytest_cache",
-            ".ruff_cache",
-            ".idea",
-            ".vscode",
-            ".DS_Store",
-            "venv",
-            ".cache",
-        }
-
-        lines: list[str] = []
-        lines.append(f"{workspace_path.name}/")
-        queue: deque[tuple[Path, str, int, bool]] = deque()
-        queue.append((root, "", 0, True))
-
-        while queue:
-            current_path, prefix, depth, is_root = queue.popleft()
-            if depth >= max_depth:
-                continue
-
-            try:
-                entries = sorted(
-                    [entry for entry in current_path.iterdir() if entry.name not in ignore_dirs],
-                    key=lambda path: (path.is_file(), path.name.lower()),
-                )
-            except OSError:
-                continue
-
-            total = len(entries)
-            for idx, entry in enumerate(entries):
-                is_last = idx == total - 1
-                connector = "└── " if is_last else "├── "
-                item_line = f"{prefix}{connector}{entry.name}"
-                if entry.is_dir():
-                    item_line += "/"
-                    lines.append(item_line)
-                    child_prefix = f"{prefix}{'    ' if is_last else '│   '}"
-                    queue.append((entry, child_prefix, depth + 1, False))
-                else:
-                    lines.append(item_line)
-
-        return "\n".join(lines)
+        payload = self.workspace_snapshot_service.refresh(workspace_path)
+        return str(payload.get("tree") or "")
 
     async def annotate_prd_with_workspace_snapshot(self, workspace_path: Path) -> None:
         prd_path = workspace_path / self.settings.ralph_prd_file_name
@@ -333,6 +283,7 @@ class RalphScenarioService:
         primary_goal = self.extract_primary_user_goal(task, constraints=constraints)
         primary_goal_block = primary_goal or "not provided"
         quality_requirement = self.quality_gate_service.extract_requirement(task=task, workspace_path=workspace_path)
+        task_intent = self.quality_gate_service.infer_task_intent(task=task, workspace_path=workspace_path)
         quality_line = "not provided"
         if quality_requirement:
             metric = quality_requirement.get("metric_key", "metric")
@@ -340,6 +291,12 @@ class RalphScenarioService:
             target = quality_requirement.get("target", "value")
             unit = quality_requirement.get("unit", "ratio")
             quality_line = f"{metric} {operator} {target} ({unit})"
+        intent_block = (
+            f"task_family={task_intent.task_family}; "
+            f"primary_metric={task_intent.primary_metric_key or 'not set'}; "
+            f"preferred_metrics={', '.join(task_intent.preferred_metrics) or 'none'}; "
+            f"real_dataset_smoke_required={'true' if task_intent.requires_real_dataset_smoke else 'false'}"
+        )
 
         previous_error = run.error_message or "none"
         experiment_history_block = experiment_history_summary or "none"
@@ -362,12 +319,6 @@ class RalphScenarioService:
             )
         context_block = "\n".join(context_lines) if context_lines else "- no retrieved context"
         workspace_tree_snapshot = self._build_workspace_tree_snapshot(workspace_path)
-        try:
-            snapshot_path = self._ralph_workspace_snapshot_path(workspace_path)
-            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-            snapshot_path.write_text(workspace_tree_snapshot, encoding="utf-8")
-        except OSError:
-            logger.warning("failed to write workspace snapshot for ralph bootstrap: %s", workspace_path)
 
         bootstrap_prompt = (
             "Create or update a Ralph PRD file in workspace.\n\n"
@@ -377,6 +328,7 @@ class RalphScenarioService:
             f"Goal:\n{task['goal']}\n\n"
             f"Primary user goal:\n{primary_goal_block}\n\n"
             f"Quality requirement:\n{quality_line}\n\n"
+            f"Inferred task intent:\n{intent_block}\n\n"
             f"Constraints:\n{constraints_block}\n\n"
             f"Retrieved context:\n{context_block}\n\n"
             f"Experiment history:\n{experiment_history_block}\n\n"
@@ -387,8 +339,10 @@ class RalphScenarioService:
             "- If PRD exists, preserve existing metadata/version fields.\n"
             "- Add `meta.workspace_snapshot` with file name and generation timestamp (use path .ralph_workspace_tree.md).\n"
             "- Use only existing paths from the provided workspace tree unless a step explicitly asks to create a new artifact.\n"
+            "- Treat the current working directory as the workspace root; do not generate shell paths prefixed with the workspace_id directory name.\n"
             "- Ensure at least one user story is present with `passes: false`.\n"
             "- Set acceptance criteria that directly supports the goal and quality requirement.\n"
+            "- Keep successMetrics and acceptanceCriteria aligned with the inferred task intent and preferred metric family.\n"
             "- For any smoke-test story, require a disjoint evaluation split and explicitly forbid reusing the exact training subset as the reported acceptance metric.\n"
             "- For any training story, require reported quality metrics to come from a held-out or otherwise disjoint evaluation split.\n"
             "- Do not start training or execute model code yet; only prepare PRD.\n"
@@ -458,6 +412,15 @@ class RalphScenarioService:
         if primary_goal and not self.has_primary_goal_constraint(constraints):
             constraints.append(f"PRIMARY_USER_GOAL: {primary_goal}")
         constraints.append(f"RALPH_STORY_ID: {story.story_id}")
+        task_intent = self.quality_gate_service.infer_task_intent(
+            task=task,
+            workspace_path=workspace_path,
+            story_id=story.story_id,
+        )
+        for inferred_constraint in task_intent.as_constraints():
+            prefix = inferred_constraint.split(":", 1)[0].strip()
+            if not any(str(item).strip().startswith(f"{prefix}:") for item in constraints):
+                constraints.append(inferred_constraint)
         story_requirement = self.quality_gate_service.extract_requirement(
             task=task,
             workspace_path=workspace_path,
@@ -489,12 +452,6 @@ class RalphScenarioService:
             else "- not specified"
         )
         workspace_tree_snapshot = self._build_workspace_tree_snapshot(workspace_path)
-        try:
-            snapshot_path = self._ralph_workspace_snapshot_path(workspace_path)
-            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-            snapshot_path.write_text(workspace_tree_snapshot, encoding="utf-8")
-        except OSError:
-            logger.warning("failed to refresh workspace snapshot for ralph story plan: %s", workspace_path)
         previous_error = run.error_message or "none"
         experiment_history_block = experiment_history_summary or "none"
         primary_goal_block = primary_goal or "not provided"
@@ -503,11 +460,19 @@ class RalphScenarioService:
             verification_block = json.dumps(verification_block, ensure_ascii=True, indent=2)
         else:
             verification_block = "none"
+        intent_block = (
+            f"- task_family: {task_intent.task_family}\n"
+            f"- primary_metric_key: {task_intent.primary_metric_key or 'not set'}\n"
+            f"- preferred_metrics: {', '.join(task_intent.preferred_metrics) or 'none'}\n"
+            f"- real_dataset_smoke_required: {'true' if task_intent.requires_real_dataset_smoke else 'false'}\n"
+            f"- evidence: {', '.join(task_intent.evidence) or 'none'}"
+        )
         augmented_goal = (
             f"Implement RALPH story {story.story_id}: {story.title}\n\n"
             f"Primary user goal (highest priority):\n{primary_goal_block}\n\n"
             f"Story description:\n{story.description}\n\n"
             f"Acceptance criteria:\n{acceptance_block}\n\n"
+            f"Inferred task intent:\n{intent_block}\n\n"
             f"Task constraints:\n{constraints_block}\n\n"
             f"Retrieved context:\n{context_block}\n\n"
             f"Workspace tree snapshot:\n{workspace_tree_snapshot}\n\n"
@@ -518,9 +483,11 @@ class RalphScenarioService:
             "- Work only on this story in this run.\n"
             "- Primary user goal has priority over repository defaults/examples.\n"
             "- Do not switch to another dataset or task unless user goal explicitly requires it.\n"
+            "- Treat the current working directory as the workspace root; all shell paths must be workspace-relative and must not start with the workspace_id directory name.\n"
             "- Any smoke-test or training metric used for acceptance must come from a disjoint evaluation split; reuse of the training subset is invalid.\n"
             "- A train-subset overfit check is diagnostic only and cannot satisfy the story or quality gate.\n"
             "- Metrics artifacts must explicitly record the evaluation split or split-integrity note.\n"
+            "- Metric family, smoke policy, and artifact content must stay aligned with the inferred task intent.\n"
             "- If a step executes model training for real, represent it as an explicit shell command step; use Codex steps to prepare code/config only.\n"
             "- If quality target was not met before, change hyperparameters using previous verification history.\n"
             "- If `improvement_strategy` is present in previous verification context, follow its chosen intervention first.\n"

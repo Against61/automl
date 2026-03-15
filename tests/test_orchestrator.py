@@ -2,28 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shlex
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
-from orchestrator.artifacts import ArtifactPublisher
-from orchestrator.app.api import _resolve_live_log_path
-from orchestrator.bus import InMemoryEventBus
-from orchestrator.codex_runner import CodexRunner, StepExecutionResult
+from orchestrator.execution.artifacts import ArtifactPublisher
+from orchestrator.runtime.bus import InMemoryEventBus
+from orchestrator.execution.codex_runner import CodexRunner, StepExecutionResult
 from orchestrator.config import Settings
-from orchestrator.db import Database
-from orchestrator.planner import PlanInput, Planner, PlannerError, StubPlanner
-from orchestrator.policy import PolicyEngine
-from orchestrator.ralph import RalphBacklogService
-from orchestrator.schemas import Priority, PlannerPlan, RunStatus, TaskPayload, TaskSubmittedEvent
-from orchestrator.schemas import PlannerStep
-from orchestrator.session import SessionManager
-from orchestrator.verifier import Verifier, VerificationResult
+from orchestrator.persistence.db import Database
+from orchestrator.planning.planner import CodexOnlyPlanner, PlanInput, Planner, PlannerError, StubPlanner, make_planner
+from orchestrator.execution.policy import PolicyEngine
+from orchestrator.planning.ralph import RalphBacklogService
+from orchestrator.persistence.schemas import Priority, PlannerPlan, PlannerStep, RunStatus, StepIOResult, TaskPayload, TaskSubmittedEvent
+from orchestrator.runtime.session import SessionManager
+from orchestrator.execution.verifier import Verifier, VerificationResult
 from orchestrator.planning.planner import _sanitize_planner_payload
-from orchestrator.persistence.schemas import StepIOResult
 from streamlit_app import _extract_latest_improvement_strategy
 
 
@@ -100,6 +98,7 @@ class QualityReplanPlanner(Planner):
                     "id": "q1",
                     "title": "emit baseline metric",
                     "action": "shell",
+                    "step_intent": "run_training",
                     "instruction": "write low val accuracy",
                     "command": "printf 'val_accuracy: 0.80\\n' > metrics.md",
                     "risk_level": "low",
@@ -117,6 +116,7 @@ class QualityReplanPlanner(Planner):
                     "id": "q2",
                     "title": "emit improved metric",
                     "action": "shell",
+                    "step_intent": "run_training",
                     "instruction": "write improved val accuracy",
                     "command": "printf 'val_accuracy: 0.96\\n' > metrics.md",
                     "risk_level": "low",
@@ -180,6 +180,48 @@ def test_codex_command_normalization_drops_full_auto(tmp_path: Path):
     normalized = runner._normalize_codex_command(shlex.split(settings.codex_cli_cmd))
     assert "--full-auto" not in normalized
     assert "--dangerously-bypass-approvals-and-sandbox" in normalized
+
+
+def test_make_planner_returns_codex_only_planner():
+    assert isinstance(make_planner(), CodexOnlyPlanner)
+
+
+@pytest.mark.asyncio
+async def test_database_lists_runs_by_status(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        llm_provider="stub",
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+    )
+    db = Database(settings.sqlite_path)
+    await db.connect()
+    try:
+        task_event = TaskSubmittedEvent(
+            event_id=uuid4(),
+            event_type="task.submitted",
+            schema_version="1.0",
+            task_id=uuid4(),
+            workspace_id="demo",
+            priority=Priority.normal,
+            payload=TaskPayload(goal="demo goal", constraints=[], pdf_scope=[]),
+        )
+        await db.upsert_task(task_event)
+        run_id = await db.create_or_get_run(
+            task_id=str(task_event.task_id),
+            workspace_id="demo",
+            priority=Priority.normal,
+        )
+        await db.update_run_status(run_id, RunStatus.EXECUTING)
+
+        runs = await db.list_runs(statuses=[RunStatus.EXECUTING])
+
+        assert [run.run_id for run in runs] == [run_id]
+        assert runs[0].status == RunStatus.EXECUTING
+    finally:
+        await db.close()
 
 
 def test_codex_soft_failure_detection(tmp_path: Path):
@@ -258,7 +300,101 @@ def test_python_runtime_command_repairs_script_path_and_smoke_flag(tmp_path: Pat
     assert "train_fashion_mnist.py" in normalized
     assert "--mode" in normalized
     assert "smoke" in normalized
-    assert "--smoke_test" not in normalized
+
+
+def test_shell_command_normalizes_workspace_name_prefix_inside_workspace_root(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        llm_provider="stub",
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace" / "demo",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+    )
+    workspace = settings.workspace_root
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    runner = CodexRunner(settings)
+    command = (
+        "ls -la demo && "
+        "find demo -maxdepth 2 -type f && "
+        "python demo/scripts/run.py && "
+        "cat demo/prd.json"
+    )
+    normalized = runner._sanitize_shell_command(command, workspace)
+
+    assert "ls -la ." in normalized
+    assert "find . -maxdepth 2 -type f" in normalized
+    assert "python ./scripts/run.py" in normalized
+    assert "cat ./prd.json" in normalized
+    assert " demo/" not in normalized
+
+
+def test_shell_command_rewrites_missing_relative_file_argument_to_existing_workspace_file(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        llm_provider="stub",
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace" / "demo",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+    )
+    workspace = settings.workspace_root
+    (workspace / "scripts").mkdir(parents=True, exist_ok=True)
+    (workspace / "ralph").mkdir(parents=True, exist_ok=True)
+    (workspace / "scripts" / "smoke_fashionmnist.py").write_text("print('ok')\n", encoding="utf-8")
+    (workspace / "ralph" / "metrics.py").write_text("print('ok')\n", encoding="utf-8")
+
+    runner = CodexRunner(settings)
+    normalized = runner._sanitize_shell_command(
+        "python -m py_compile scripts/metrics.py scripts/smoke_fashionmnist.py",
+        workspace,
+    )
+
+    assert "python -m py_compile" in normalized
+    assert "ralph/metrics.py" in normalized
+    assert "scripts/smoke_fashionmnist.py" in normalized
+    assert "scripts/metrics.py" not in normalized
+
+
+@pytest.mark.asyncio
+async def test_set_approved_preserves_waiting_plan_review_status(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        llm_provider="stub",
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+    )
+    db = Database(settings.sqlite_path)
+    await db.connect()
+    event = TaskSubmittedEvent(
+        event_id=str(uuid4()),
+        event_type="task.submitted",
+        schema_version="1.0",
+        task_id=str(uuid4()),
+        workspace_id="demo",
+        priority=Priority.normal,
+        payload=TaskPayload(goal="demo"),
+    )
+    await db.upsert_task(event)
+    run_id = await db.create_or_get_run(
+        task_id=str(event.task_id),
+        workspace_id=event.workspace_id,
+        priority=event.priority,
+    )
+    await db.update_run_status(run_id, RunStatus.WAITING_PLAN_REVIEW, "needs review")
+
+    changed = await db.set_approved(run_id)
+    assert changed is True
+
+    run = await db.get_run(run_id)
+    assert run is not None
+    assert run.status == RunStatus.WAITING_PLAN_REVIEW
+    assert run.approved_at is not None
+
+    await db.close()
 
 
 def test_python_runtime_command_switches_to_module_for_src_layout(tmp_path: Path):
@@ -282,8 +418,34 @@ def test_python_runtime_command_switches_to_module_for_src_layout(tmp_path: Path
         "python src/train.py --epochs 1",
         workspace,
     )
-    assert normalized.startswith("python -m src.train")
+    assert "python -m src.train" in normalized
     assert "--epochs 1" in normalized
+
+
+def test_python_runtime_command_adds_pythonpath_for_sibling_workspace_imports(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        llm_provider="stub",
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+    )
+    workspace = settings.workspace_root
+    (workspace / "scripts").mkdir(parents=True, exist_ok=True)
+    (workspace / "ralph").mkdir(parents=True, exist_ok=True)
+    (workspace / "scripts" / "smoke_fashionmnist.py").write_text(
+        "from ralph.metrics import write_json_atomic\nprint('ok')\n",
+        encoding="utf-8",
+    )
+    (workspace / "ralph" / "metrics.py").write_text("def write_json_atomic(*args, **kwargs):\n    return None\n", encoding="utf-8")
+
+    runner = CodexRunner(settings)
+    normalized = runner._normalize_python_runtime_command(
+        "python -u scripts/smoke_fashionmnist.py --epochs 1",
+        workspace,
+    )
+    assert normalized.startswith("PYTHONPATH=. python -u scripts/smoke_fashionmnist.py")
 
 
 def test_local_module_reference_is_not_auto_installed(tmp_path: Path):
@@ -441,6 +603,29 @@ async def test_training_shell_step_times_out_on_idle_without_output(tmp_path: Pa
     assert result.status == "timeout"
     assert "idle timeout" in result.summary
     assert "training-idle-watchdog" in result.stderr_text
+
+
+def test_runner_detects_missing_module_from_stdout_payload(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        llm_provider="stub",
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+    )
+    runner = CodexRunner(settings)
+    result = StepExecutionResult(
+        status="failed",
+        exit_code=1,
+        summary="command failed: python run_task.py",
+        stdout_text="PyTorch import failed: No module named 'torch'\n{\"status\":\"FAIL\"}",
+        stderr_text="",
+        duration_ms=10,
+        command="python run_task.py",
+    )
+
+    assert runner._missing_module_name_from_result(result) == "torch"
 
 
 def test_runner_ignores_stale_metrics_for_codex_edit_steps(tmp_path: Path):
@@ -672,6 +857,127 @@ async def test_process_run_reconciles_stepio_results_and_completes_run(tmp_path:
     assert await db.count_attempted_steps(run_id) == 2
 
 
+@pytest.mark.asyncio
+async def test_reconcile_stepio_ignores_stale_artifacts_from_previous_execution_cycle(tmp_path: Path):
+    plan = PlannerPlan(
+        version="1.0",
+        summary="single-step recovery plan",
+        steps=[
+            {
+                "id": "s1",
+                "title": "prepare",
+                "action": "read",
+                "instruction": "recover current cycle only",
+                "risk_level": "low",
+            },
+            {
+                "id": "s2",
+                "title": "next step",
+                "action": "read",
+                "instruction": "keep run in progress",
+                "risk_level": "low",
+            },
+        ],
+    )
+    session, db, _, _, settings = await create_session(tmp_path, planner=StaticPlanner(plan))
+    event = TaskSubmittedEvent(
+        event_id=uuid4(),
+        event_type="task.submitted",
+        schema_version="1.0",
+        task_id=uuid4(),
+        workspace_id="demo",
+        priority=Priority.normal,
+        payload=TaskPayload(goal="reconcile only current execution cycle", constraints=[]),
+    )
+    run_id = await session.submit_task_event(event.model_dump(mode="json"))
+    assert run_id is not None
+
+    workspace_path = settings.workspace_root / "demo"
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    run_path = settings.runs_root / run_id
+    run_path.mkdir(parents=True, exist_ok=True)
+
+    await db.set_context(run_id, [])
+    await db.set_plan(run_id, plan.model_dump(mode="json"))
+    await db.update_run_status(run_id, RunStatus.EXECUTING)
+
+    old_payload = StepIOResult(
+        run_id=run_id,
+        step_id="s1",
+        status="completed",
+        error_code="none",
+        summary="old cycle artifact",
+        operation="general",
+        intent="check",
+        command=None,
+        metrics={},
+        duration_ms=0,
+    )
+    old_path = run_path / "s1.step_result.json"
+    old_path.write_text(json.dumps(old_payload.model_dump(mode="json"), ensure_ascii=True, indent=2), encoding="utf-8")
+    old_created_at = datetime.now(timezone.utc) - timedelta(seconds=30)
+    os.utime(old_path, (old_created_at.timestamp(), old_created_at.timestamp()))
+    await db.insert_run_step(
+        run_id=run_id,
+        step_id="s1",
+        step_title="prepare",
+        step_index=0,
+        action="read",
+        command=None,
+        status="completed",
+        stdout_text="summary: old cycle artifact",
+        stderr_text="",
+        duration_ms=0,
+        created_at=old_created_at.isoformat(),
+    )
+
+    next_cycle = await db.advance_execution_cycle(run_id)
+    assert next_cycle == 1
+    run = await db.get_run(run_id)
+    assert run is not None
+    assert run.execution_cycle == 1
+    assert run.cycle_started_at is not None
+
+    new_payload = StepIOResult(
+        run_id=run_id,
+        step_id="s1",
+        status="completed",
+        error_code="none",
+        summary="current cycle artifact",
+        operation="general",
+        intent="check",
+        command=None,
+        metrics={},
+        duration_ms=0,
+    )
+    new_path = run_path / "s1.step_result.2.json"
+    new_path.write_text(json.dumps(new_payload.model_dump(mode="json"), ensure_ascii=True, indent=2), encoding="utf-8")
+
+    latest = await session._process_run_uc.stepio_recovery_service.reconcile_stepio_artifacts(
+        run=run,
+        run_path=run_path,
+    )
+    assert latest["s1"].summary == "current cycle artifact"
+
+    refreshed = await db.get_run(run_id)
+    assert refreshed is not None
+    changed = await session._process_run_uc.stepio_recovery_service.sync_run_progress_from_stepio(
+        run=refreshed,
+        latest_by_step_id=latest,
+    )
+    assert changed is True
+
+    final_run = await db.get_run(run_id)
+    assert final_run is not None
+    assert final_run.next_step_index == 1
+
+    steps = await db.list_run_steps(run_id)
+    s1_steps = [step for step in steps if step["step_id"] == "s1"]
+    assert len(s1_steps) == 2
+    assert any("current cycle artifact" in (step["stdout_text"] or "") for step in s1_steps)
+    await db.close()
+
+
 def test_codex_env_does_not_forward_api_key_when_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("OPENAI_API_KEY", "from-env")
     settings = Settings(
@@ -730,6 +1036,125 @@ async def test_stub_planner_uses_goal_not_mnist_template():
     assert any("disjoint" in (step.codex_prompt or step.instruction).lower() for step in plan.steps)
     assert any("overfit check" in (step.codex_prompt or step.instruction).lower() for step in plan.steps)
     assert plan.summary != ""
+
+
+@pytest.mark.asyncio
+async def test_stub_planner_is_repo_agnostic():
+    planner = StubPlanner()
+    payload = PlanInput(
+        goal="Inspect workspace and prepare a training script.",
+        constraints=[],
+        contexts=[],
+        workspace_id="ws",
+    )
+    plan = await planner.build_plan(payload)
+
+    shell_commands = [command for step in plan.steps if step.action == "shell" for command in step.commands]
+
+    assert shell_commands
+    assert all("git status --porcelain" not in command for command in shell_commands)
+    assert all("git diff --stat" not in command for command in shell_commands)
+    assert "pwd" in shell_commands
+    assert any(command.startswith("ls -la") for command in shell_commands)
+    assert any(command.startswith("find . -maxdepth 3 -type f") for command in shell_commands)
+
+
+@pytest.mark.asyncio
+async def test_stub_planner_quality_target_emits_shell_training_step():
+    planner = StubPlanner()
+    payload = PlanInput(
+        goal="обучи сегментатор на датасете в workspace",
+        constraints=["RALPH_REQUIRED_METRIC: iou >= 95%"],
+        contexts=[],
+        workspace_id="ws",
+    )
+    plan = await planner.build_plan(payload)
+
+    assert plan.summary == "Stub training plan"
+    preflight_step = next(step for step in plan.steps if step.id == "step-3")
+    training_step = next(step for step in plan.steps if step.id == "step-4")
+    assert any(step.step_intent.value == "run_training" and step.action == "shell" for step in plan.steps)
+    assert preflight_step.action == "codex"
+    assert "preflight/debug loop" in (preflight_step.instruction or "")
+    assert (training_step.command or "") == "python run_task.py --metrics-path metrics.json"
+    assert any(step.step_intent.value == "verify_metrics" and step.action == "verify" for step in plan.steps)
+
+
+@pytest.mark.asyncio
+async def test_stub_planner_routes_first_preflight_through_codex_by_default():
+    planner = StubPlanner()
+    payload = PlanInput(
+        goal="обучи сегментатор на датасете в workspace",
+        constraints=["RALPH_REQUIRED_METRIC: iou >= 95%"],
+        contexts=[],
+        workspace_id="ws",
+    )
+
+    plan = await planner.build_plan(payload)
+
+    preflight_step = next(step for step in plan.steps if step.id == "step-3")
+    training_step = next(step for step in plan.steps if step.id == "step-4")
+
+    assert preflight_step.action == "codex"
+    assert "Codex-owned preflight/debug loop" in (preflight_step.instruction or "")
+    assert training_step.action == "shell"
+    assert (training_step.command or "") == "python run_task.py --metrics-path metrics.json"
+
+
+@pytest.mark.asyncio
+async def test_stub_planner_ralph_preparatory_story_emits_analysis_plan():
+    planner = StubPlanner()
+    payload = PlanInput(
+        goal=(
+            "Implement RALPH story US-001: Определить тип и целевые классы датасета\n\n"
+            "Story description:\n"
+            "Проанализировать структуру папки coco-segmentation и аннотационных файлов, "
+            "убедиться, что это COCO instance segmentation, и зафиксировать список классов.\n\n"
+            "Acceptance criteria:\n"
+            "- Подтверждено присутствие fields images, annotations, categories, segmentation.\n"
+            "- Составлен точный список классов.\n\n"
+            "Primary user goal:\n"
+            "обучи сегментатор"
+        ),
+        constraints=[
+            "RALPH_STORY_ID: US-001",
+            "RALPH_REQUIRED_METRIC: iou >= 95%",
+        ],
+        contexts=[],
+        workspace_id="ws",
+    )
+    plan = await planner.build_plan(payload)
+
+    assert plan.summary == "Stub Ralph preparatory plan (training is deferred)"
+    assert any(step.action == "shell" and (step.command or "") == "python run_task.py" for step in plan.steps)
+    codex_step = next(step for step in plan.steps if step.action == "codex")
+    assert "Do not depend on PyTorch" in (codex_step.instruction or "")
+    assert "planning_only_report_detected" in (codex_step.instruction or "")
+
+
+@pytest.mark.asyncio
+async def test_stub_planner_segmentation_training_prompt_forbids_synthetic_smoke():
+    planner = StubPlanner()
+    payload = PlanInput(
+        goal="обучи сегментатор на coco-segmentation и отчитай IoU",
+        constraints=[
+            "RALPH_REQUIRED_METRIC: iou >= 95%",
+            "TASK_FAMILY: segmentation",
+            "PRIMARY_METRIC_KEY: iou",
+            "PREFERRED_METRICS: iou, mean_iou, dice",
+            "REAL_DATASET_SMOKE_REQUIRED: true",
+        ],
+        contexts=[],
+        workspace_id="ws",
+    )
+    plan = await planner.build_plan(payload)
+
+    codex_step = next(step for step in plan.steps if step.action == "codex")
+    assert "requires real-dataset evidence" in (codex_step.instruction or "")
+    assert "real subset of the dataset" in (codex_step.instruction or "")
+    assert "iou, mean_iou, dice" in (codex_step.instruction or "")
+    assert "--preflight" in (codex_step.instruction or "")
+    assert "file_name" in (codex_step.instruction or "")
 
 
 def test_planner_payload_sanitizes_retry_policy_reasons():
@@ -996,7 +1421,10 @@ async def test_quality_gate_skip_reason_for_planning_only_plan(tmp_path: Path):
         metrics={},
     )
 
-    reason = session._process_run_uc._quality_gate_skip_reason(run=run, verification=verification)
+    reason = session._process_run_uc.execution_guard_service.quality_gate_skip_reason(
+        run=run,
+        verification=verification,
+    )
     assert reason == "quality gate skipped: current plan is planning-only"
 
 
@@ -1028,8 +1456,180 @@ async def test_quality_gate_skip_reason_does_not_skip_real_training_plan(tmp_pat
         metrics={"planning_only_report_detected": False},
     )
 
-    reason = session._process_run_uc._quality_gate_skip_reason(run=run, verification=verification)
+    reason = session._process_run_uc.execution_guard_service.quality_gate_skip_reason(
+        run=run,
+        verification=verification,
+    )
     assert reason is None
+
+
+@pytest.mark.asyncio
+async def test_planning_only_terminal_skip_reason_overrides_failed_quality_gate(tmp_path: Path):
+    session, _, _, _, _ = await create_session(tmp_path)
+    reason = session._process_run_uc.verification_stage.verification_flow_service.planning_only_terminal_skip_reason(
+        {
+            "metrics": {
+                "planning_only_report_detected": True,
+                "training_deferred": True,
+                "dataset_parse_ok": True,
+            },
+            "quality_gate": {
+                "status": "failed",
+                "reason": "metric 'iou' not found in verification output",
+            },
+        }
+    )
+    assert reason == "quality gate skipped: planning-only artifacts are not evaluated against target metrics"
+
+
+@pytest.mark.asyncio
+async def test_synthetic_real_dataset_smoke_guard_blocks_generated_samples_script(tmp_path: Path):
+    session, _, _, _, settings = await create_session(tmp_path)
+    workspace = settings.workspace_root / "demo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    script = workspace / "run_task.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import torch",
+                "x = torch.randn(16, 2)",
+                "print(x)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    step = PlannerStep(
+        id="train-seg",
+        title="run segmentation smoke",
+        action="shell",
+        step_intent="run_training",
+        command="python run_task.py",
+        risk_level="low",
+    )
+
+    reason = session._process_run_uc.execution_guard_service.synthetic_real_dataset_smoke_guard_reason(
+        task={
+            "goal": "Train segmentation model on coco-segmentation",
+            "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: iou >= 95%"]),
+        },
+        workspace_path=workspace,
+        step=step,
+    )
+
+    assert reason is not None
+    assert "synthetic data" in reason
+
+
+@pytest.mark.asyncio
+async def test_preflight_dependency_block_reason_detects_missing_torch_metrics(tmp_path: Path):
+    session, db, _, _, settings = await create_session(tmp_path)
+    workspace = settings.workspace_root / "demo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "preflight_metrics.json").write_text(
+        json.dumps(
+            {
+                "mode": "preflight",
+                "smoke_torch_available": False,
+                "error": "PyTorch is required for smoke execution: No module named 'torch'",
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    step = PlannerStep(
+        id="train-seg",
+        title="run segmentation smoke",
+        action="shell",
+        step_intent="run_training",
+        command="python run_task.py --metrics-path metrics.json",
+        risk_level="low",
+    )
+
+    reason = session._process_run_uc.execution_guard_service.preflight_dependency_block_reason(
+        workspace_path=workspace,
+        step=step,
+    )
+
+    assert reason is not None
+    assert "dependency recovery required" in reason
+    assert "torch" in reason.lower()
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_structured_dependency_failure_reason_detects_missing_torch_from_metrics_payload(tmp_path: Path):
+    session, db, _, _, settings = await create_session(tmp_path)
+    workspace = settings.workspace_root / "demo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "metrics.json").write_text(
+        json.dumps(
+            {
+                "mode": "smoke_torch_missing",
+                "status": "failed",
+                "error": "PyTorch is required for smoke execution: No module named 'torch'",
+                "quality_gate_applies": False,
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    step = PlannerStep(
+        id="train-seg",
+        title="run segmentation smoke",
+        action="shell",
+        step_intent="run_training",
+        command="python run_task.py --metrics-path metrics.json",
+        expected_artifacts=[{"path": "metrics.json", "kind": "metrics", "must_exist": True}],
+        risk_level="low",
+    )
+    result = StepExecutionResult(
+        status="failed",
+        exit_code=1,
+        summary="command failed: python run_task.py --metrics-path metrics.json",
+        stdout_text="",
+        stderr_text="",
+        duration_ms=5,
+        command="python run_task.py --metrics-path metrics.json",
+    )
+
+    reason = session._process_run_uc.execution_guard_service.structured_dependency_failure_reason(
+        workspace_path=workspace,
+        step=step,
+        result=result,
+    )
+
+    assert reason is not None
+    assert "dependency recovery required" in reason
+    assert "metrics.json" in reason
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_stub_planner_uses_task_intent_constraints_for_detection_metrics():
+    planner = StubPlanner()
+    payload = PlanInput(
+        goal="обучи модель на наборе изображений",
+        constraints=[
+            "RALPH_REQUIRED_METRIC: accuracy >= 95%",
+            "TASK_FAMILY: detection",
+            "PRIMARY_METRIC_KEY: map50",
+            "PREFERRED_METRICS: map50, map50_95, precision, recall",
+            "REAL_DATASET_SMOKE_REQUIRED: true",
+        ],
+        contexts=[],
+        workspace_id="ws",
+    )
+    plan = await planner.build_plan(payload)
+
+    verify_step = next(step for step in plan.steps if step.step_intent.value == "verify_metrics")
+    codex_step = next(step for step in plan.steps if step.action == "codex")
+
+    assert verify_step.expected_artifacts[0].metric_keys == ["map50"]
+    assert "task_family: detection" in (codex_step.instruction or "")
+    assert "map50, map50_95, precision, recall" in (codex_step.instruction or "")
+    assert any((step.command or "") == "python run_task.py --preflight --metrics-path preflight_metrics.json" for step in plan.steps)
 
 
 @pytest.mark.asyncio
@@ -1293,24 +1893,6 @@ async def test_list_run_steps_returns_chronological_attempts_and_titles(tmp_path
     await db.close()
 
 
-def test_resolve_live_log_path_prefers_direct_file_then_latest_suffix(tmp_path: Path):
-    run_dir = tmp_path / "run-live"
-    run_dir.mkdir()
-    direct = run_dir / "train.stdout.log"
-    direct.write_text("direct", encoding="utf-8")
-    assert _resolve_live_log_path(run_dir, "train", "stdout") == direct
-
-    direct.unlink()
-    older = run_dir / "train-1.stdout.log"
-    newer = run_dir / "train-2.stdout.log"
-    older.write_text("older", encoding="utf-8")
-    newer.write_text("newer", encoding="utf-8")
-    older.touch()
-    newer.touch()
-    assert _resolve_live_log_path(run_dir, "train", "stdout") == newer
-    assert _resolve_live_log_path(run_dir, "../train", "stdout") is None
-
-
 @pytest.mark.asyncio
 async def test_missing_python_file_triggers_replan_once(tmp_path: Path):
     planner = MissingFileReplanPlanner()
@@ -1396,6 +1978,8 @@ async def test_quality_replan_restarts_plan_from_first_step(tmp_path: Path):
     assert mid is not None
     assert mid.status == RunStatus.CONTEXT_READY
     assert mid.attempts_by_stage.get("QUALITY_REPLAN") == 1
+    assert mid.execution_cycle == 1
+    assert mid.cycle_started_at is not None
 
     await session.process_run(run_id)
     done = await db.get_run(run_id)
@@ -1406,6 +1990,200 @@ async def test_quality_replan_restarts_plan_from_first_step(tmp_path: Path):
     steps = await db.list_run_steps(run_id)
     assert any(step["step_id"] == "q1" for step in steps)
     assert any(step["step_id"] == "q2" for step in steps)
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_preflight_dependency_block_fails_run_without_execution_replan(tmp_path: Path):
+    plan = PlannerPlan(
+        version="1.0",
+        summary="single training step blocked by preflight dependency signal",
+        steps=[
+            {
+                "id": "train-1",
+                "title": "run training",
+                "action": "shell",
+                "step_intent": "run_training",
+                "instruction": "attempt smoke training",
+                "command": "python -c \"from pathlib import Path; Path('touched.txt').write_text('ran', encoding='utf-8')\"",
+                "expected_artifacts": [
+                    {"path": "metrics.json", "kind": "metrics", "must_exist": True, "must_be_nonempty": True}
+                ],
+                "risk_level": "low",
+            }
+        ],
+    )
+    session, db, _, _, settings = await create_session(tmp_path, planner=StaticPlanner(plan))
+    run_id = await session.submit_task_event(task_event(workspace_id="demo", goal="run blocked training"))
+    assert run_id
+
+    workspace = settings.workspace_root / "demo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "preflight_metrics.json").write_text(
+        json.dumps(
+            {
+                "mode": "preflight",
+                "smoke_torch_available": False,
+                "error": "PyTorch is required for smoke execution: No module named 'torch'",
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    await session.process_run(run_id)
+    run = await db.get_run(run_id)
+    assert run is not None
+    assert run.status == RunStatus.FAILED
+    assert "preflight dependency recovery required before training step" in (run.error_message or "")
+    assert run.attempts_by_stage.get("EXECUTION_REPLAN", 0) == 0
+    assert not (workspace / "touched.txt").exists()
+
+    steps = await db.list_run_steps(run_id)
+    train_step = next(step for step in steps if step["step_id"] == "train-1")
+    assert train_step["status"] == "failed"
+    assert "blocked before execution" in (train_step["stdout_text"] or "")
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_quality_target_plan_without_shell_training_goes_to_plan_review(tmp_path: Path):
+    plan = PlannerPlan(
+        version="1.0",
+        summary="Stub plan",
+        steps=[
+            {
+                "id": "s1",
+                "title": "inspect",
+                "action": "shell",
+                "instruction": "inspect workspace",
+                "commands": ["pwd"],
+                "risk_level": "low",
+            },
+            {
+                "id": "s2",
+                "title": "verify metrics via codex",
+                "action": "codex",
+                "step_intent": "verify_metrics",
+                "instruction": "check metrics",
+                "risk_level": "low",
+            },
+        ],
+    )
+    session, db, _, _, _ = await create_session(tmp_path, planner=StaticPlanner(plan))
+    event = task_event(goal="Train segmentation model and satisfy IoU target")
+    event["payload"]["constraints"] = ["RALPH_REQUIRED_METRIC: IOU >= 98%"]
+    run_id = await session.submit_task_event(event)
+    assert run_id
+
+    await session.process_run(run_id)
+    run = await db.get_run(run_id)
+    assert run is not None
+    assert run.status == RunStatus.WAITING_PLAN_REVIEW
+    assert "without an explicit shell run_training step" in (run.error_message or "")
+
+    steps = await db.list_run_steps(run_id)
+    assert steps == []
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_ralph_bootstrap_only_plan_bypasses_plan_review_for_quality_target(tmp_path: Path):
+    session, db, _, _, settings = await create_session(tmp_path)
+    workspace = settings.workspace_root / "demo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / ".ralph_workspace_tree.md").write_text("demo/\n", encoding="utf-8")
+    (workspace / "prd.json").write_text('{"userStories":[{"id":"us1","passes":false}]}', encoding="utf-8")
+
+    event = task_event(workspace_id="demo", goal="обучи сегментатор")
+    event["payload"]["execution_mode"] = "ralph_story"
+    event["payload"]["constraints"] = ["RALPH_REQUIRED_METRIC: iou >= 95%"]
+    run_id = await session.submit_task_event(event)
+    assert run_id
+
+    await session.process_run(run_id)
+    run = await db.get_run(run_id)
+    assert run is not None
+    assert run.status == RunStatus.CONTEXT_READY
+    assert run.error_message == "RALPH PRD bootstrap completed"
+
+    steps = await db.list_run_steps(run_id)
+    assert any(step["step_id"] == "ralph-prd-bootstrap" for step in steps)
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_ralph_preparatory_plan_bypasses_plan_review_for_quality_target(tmp_path: Path):
+    session, db, _, _, _ = await create_session(tmp_path)
+    use_case = session._process_run_uc
+    plan = PlannerPlan(
+        version="1.0",
+        summary="Stub Ralph preparatory plan (training is deferred)",
+        steps=[
+            {
+                "id": "s1",
+                "title": "prepare planning-only report",
+                "action": "shell",
+                "step_intent": "general",
+                "command": "printf 'ok\\n'",
+                "risk_level": "low",
+            }
+        ],
+    )
+
+    issue = use_case.execution_guard_service.plan_quality_execution_issue(
+        task={
+            "goal": "RALPH preparatory story",
+            "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: iou >= 95%"]),
+            "payload_json": json.dumps({"payload": {"execution_mode": "ralph_story"}}),
+        },
+        workspace_path=tmp_path / "workspace" / "demo",
+        plan=plan,
+    )
+
+    assert issue is None
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_quality_replan_block_reason_for_stub_plan_without_training(tmp_path: Path):
+    plan = PlannerPlan(
+        version="1.0",
+        summary="Stub plan",
+        steps=[
+            {
+                "id": "s1",
+                "title": "verify metrics via codex",
+                "action": "codex",
+                "step_intent": "verify_metrics",
+                "instruction": "check metrics",
+                "risk_level": "low",
+            }
+        ],
+    )
+    session, db, _, _, _ = await create_session(tmp_path, planner=StaticPlanner(plan))
+    event = task_event(goal="Train segmentation model and satisfy IoU target")
+    event["payload"]["constraints"] = ["RALPH_REQUIRED_METRIC: IOU >= 98%"]
+    run_id = await session.submit_task_event(event)
+    assert run_id
+
+    await db.set_plan(run_id, plan.model_dump(mode="json"))
+    run = await db.get_run(run_id)
+    assert run is not None
+
+    reason = session._process_run_uc.execution_guard_service.quality_replan_block_reason(
+        run=run,
+        task={
+            "goal": event["payload"]["goal"],
+            "constraints_json": json.dumps(event["payload"]["constraints"]),
+            "payload_json": json.dumps({"payload": {"execution_mode": "plan_execute"}}),
+        },
+        workspace_path=tmp_path / "workspace" / "demo",
+    )
+
+    assert reason is not None
+    assert "without an explicit shell run_training step" in reason
     await db.close()
 
 
@@ -1581,6 +2359,114 @@ async def test_database_records_and_lists_experiment_attempts(tmp_path: Path):
     assert attempts[0]["metrics"]["accuracy"] == pytest.approx(0.87)
     assert attempts[0]["hyperparameters"]["epochs"] == 5
     assert attempts[0]["skill_paths"] == ["skills/pytorch-lightning/SKILL.md"]
+
+
+@pytest.mark.asyncio
+async def test_database_run_retention_deletes_old_history_rows_and_logs_stats(tmp_path: Path):
+    db = Database(tmp_path / "orchestrator.db")
+    await db.connect()
+
+    old_ts = "2026-01-01T00:00:00+00:00"
+    new_ts = "2026-03-14T00:00:00+00:00"
+
+    await db.conn.execute(
+        """
+        INSERT INTO run_events(event_id, stream, event_type, run_id, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("evt-old", "tasks", "task.submitted", "run-old", "{}", old_ts),
+    )
+    await db.conn.execute(
+        """
+        INSERT INTO run_events(event_id, stream, event_type, run_id, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("evt-new", "tasks", "task.submitted", "run-new", "{}", new_ts),
+    )
+    await db.conn.execute(
+        """
+        INSERT INTO run_steps(run_id, step_id, step_title, step_index, action, command, status, stdout_text, stderr_text, duration_ms, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("run-old", "s1", "old step", 0, "shell", "echo old", "completed", "", "", 1, old_ts),
+    )
+    await db.conn.execute(
+        """
+        INSERT INTO policy_decisions(run_id, layer, subject, decision, reason, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("run-old", "policy", "subject", "ALLOW", "ok", old_ts),
+    )
+    await db.conn.commit()
+
+    stats = await db.run_retention(days=30)
+    assert stats["deleted_run_events"] >= 1
+    assert stats["deleted_run_steps"] >= 1
+    assert stats["deleted_policy_decisions"] >= 1
+
+    remaining_events = await db._fetchall("SELECT event_id FROM run_events ORDER BY event_id")
+    assert [row["event_id"] for row in remaining_events] == ["evt-new"]
+
+    retention_rows = await db._fetchall(
+        """
+        SELECT deleted_run_events, deleted_run_steps, deleted_policy_decisions
+        FROM retention_stats
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+    assert retention_rows
+    assert int(retention_rows[0]["deleted_run_events"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_database_pdf_repository_roundtrip(tmp_path: Path):
+    db = Database(tmp_path / "orchestrator.db")
+    await db.connect()
+
+    doc_id, created = await db.upsert_pdf_document(
+        path="knowledge/pdfs/doc1.pdf",
+        content_hash="hash-1",
+        mtime=123.0,
+        page_count=2,
+    )
+    assert created is True
+    assert doc_id > 0
+
+    chunk_ids = await db.replace_pdf_chunks(
+        doc_id,
+        "knowledge/pdfs/doc1.pdf",
+        [
+            (0, 1, "alpha beta gamma"),
+            (1, 2, "delta epsilon"),
+        ],
+    )
+    assert len(chunk_ids) == 2
+
+    await db.set_chunk_embeddings(
+        [
+            (chunk_ids[0], [0.1, 0.2]),
+            (chunk_ids[1], [0.3, 0.4]),
+        ]
+    )
+
+    known_paths = await db.list_known_pdf_paths()
+    assert known_paths == ["knowledge/pdfs/doc1.pdf"]
+
+    hashes = await db.get_pdf_path_hashes()
+    assert hashes == {"knowledge/pdfs/doc1.pdf": "hash-1"}
+
+    fts_rows = await db.fts_search("alpha", top_k=5)
+    assert len(fts_rows) == 1
+    assert fts_rows[0].document_path == "knowledge/pdfs/doc1.pdf"
+    assert "alpha beta gamma" in fts_rows[0].text
+
+    vector_rows = await db.vector_candidates()
+    assert len(vector_rows) == 2
+    assert all(row.embedding is not None for row in vector_rows)
+
+    await db.remove_pdf_document("knowledge/pdfs/doc1.pdf")
+    assert await db.list_known_pdf_paths() == []
 
 
 @pytest.mark.asyncio

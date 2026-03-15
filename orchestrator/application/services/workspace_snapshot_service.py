@@ -46,6 +46,23 @@ class WorkspaceSnapshotService:
         ".jpeg",
         ".webp",
     }
+    _preferred_inventory_suffixes = (
+        ".json",
+        ".yaml",
+        ".yml",
+        ".txt",
+        ".md",
+        ".csv",
+        ".py",
+        ".xml",
+        ".ini",
+        ".cfg",
+        ".toml",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+    )
 
     def snapshot_json_path(self, workspace_path: Path) -> Path:
         return workspace_path / ".agent" / "workspace_snapshot.json"
@@ -64,7 +81,8 @@ class WorkspaceSnapshotService:
         result: Any | None = None,
     ) -> dict[str, Any]:
         workspace_path.mkdir(parents=True, exist_ok=True)
-        tree_text = self._build_tree_snapshot(workspace_path)
+        inventory = self._collect_file_inventory(workspace_path)
+        tree_text = self._build_tree_snapshot(workspace_path, inventory=inventory)
         recent_files = self._recent_files(workspace_path)
         touched_files = self._normalize_paths(getattr(result, "files_changed", None), workspace_path)
         detected_output_paths = self._extract_output_paths(
@@ -90,6 +108,7 @@ class WorkspaceSnapshotService:
             "detected_output_paths": detected_output_paths,
             "expected_artifacts": expected_artifacts,
             "basename_candidates": basename_candidates,
+            "inventory": inventory,
             "tree": tree_text,
         }
         self._write_payload(workspace_path, payload)
@@ -118,13 +137,31 @@ class WorkspaceSnapshotService:
         basename_candidates = (
             payload.get("basename_candidates") if isinstance(payload.get("basename_candidates"), dict) else {}
         )
+        inventory = payload.get("inventory") if isinstance(payload.get("inventory"), dict) else {}
         tree = str(payload.get("tree") or "").strip()
-        tree_lines = tree.splitlines()[:40]
+        tree_lines = tree.splitlines()[:80]
 
         lines = [
             f"Workspace snapshot refreshed at: {payload.get('generated_at', 'unknown')}",
             f"Workspace root: {payload.get('workspace_root', 'workspace')}",
         ]
+        total_files = inventory.get("total_files")
+        unique_formats = inventory.get("unique_formats")
+        if isinstance(total_files, int):
+            if isinstance(unique_formats, int):
+                lines.append(f"Workspace file inventory: {total_files} files across {unique_formats} formats")
+            else:
+                lines.append(f"Workspace file inventory: {total_files} files")
+        formats = inventory.get("formats") if isinstance(inventory.get("formats"), list) else []
+        if formats:
+            lines.append("Formats overview:")
+            for item in formats[:12]:
+                if not isinstance(item, dict):
+                    continue
+                suffix = str(item.get("suffix") or "[no extension]")
+                count = item.get("count")
+                if isinstance(count, int):
+                    lines.append(f"- {suffix}: {count} file(s)")
         if touched_files:
             lines.append("Recently changed files:")
             lines.extend(f"- {item}" for item in touched_files[:20])
@@ -144,7 +181,7 @@ class WorkspaceSnapshotService:
             lines.append("Recent workspace files:")
             lines.extend(f"- {item}" for item in recent_files[:20])
         if tree_lines:
-            lines.append("Workspace tree excerpt:")
+            lines.append("Workspace layout summary:")
             lines.extend(tree_lines)
         return "\n".join(lines)
 
@@ -287,7 +324,13 @@ class WorkspaceSnapshotService:
             return None
         return "/".join(parts)
 
-    def _build_tree_snapshot(self, workspace_path: Path, max_depth: int = 4) -> str:
+    def _build_tree_snapshot(
+        self,
+        workspace_path: Path,
+        *,
+        inventory: dict[str, Any] | None = None,
+        max_depth: int = 4,
+    ) -> str:
         root = workspace_path.resolve()
         if not root.is_dir():
             return f"{workspace_path.name}/"
@@ -300,8 +343,12 @@ class WorkspaceSnapshotService:
                 continue
             try:
                 entries = sorted(
-                    [entry for entry in current_path.iterdir() if entry.name not in self._ignore_dirs],
-                    key=lambda path: (path.is_file(), path.name.lower()),
+                    [
+                        entry
+                        for entry in current_path.iterdir()
+                        if entry.name not in self._ignore_dirs and entry.is_dir()
+                    ],
+                    key=lambda path: path.name.lower(),
                 )
             except OSError:
                 continue
@@ -309,15 +356,89 @@ class WorkspaceSnapshotService:
             for idx, entry in enumerate(entries):
                 is_last = idx == total - 1
                 connector = "└── " if is_last else "├── "
-                line = f"{prefix}{connector}{entry.name}"
-                if entry.is_dir():
-                    line += "/"
-                    lines.append(line)
-                    child_prefix = f"{prefix}{'    ' if is_last else '│   '}"
-                    queue.append((entry, child_prefix, depth + 1))
-                else:
-                    lines.append(line)
+                line = f"{prefix}{connector}{entry.name}/"
+                lines.append(line)
+                child_prefix = f"{prefix}{'    ' if is_last else '│   '}"
+                queue.append((entry, child_prefix, depth + 1))
+        inventory_block = self._render_inventory_block(inventory or {})
+        if inventory_block:
+            lines.append("")
+            lines.extend(inventory_block)
         return "\n".join(lines)
+
+    def _collect_file_inventory(
+        self,
+        workspace_path: Path,
+        *,
+        sample_limit_per_format: int = 10,
+        render_format_limit: int = 20,
+    ) -> dict[str, Any]:
+        stats: dict[str, dict[str, Any]] = {}
+        total_files = 0
+        for path in workspace_path.rglob("*"):
+            if not path.is_file():
+                continue
+            if self._should_ignore(path, workspace_path):
+                continue
+            total_files += 1
+            suffix = path.suffix.lower() or "[no extension]"
+            rel = path.relative_to(workspace_path).as_posix()
+            item = stats.setdefault(suffix, {"suffix": suffix, "count": 0, "samples": []})
+            item["count"] += 1
+            samples = item["samples"]
+            if len(samples) < sample_limit_per_format:
+                samples.append(rel)
+
+        ordered = sorted(
+            stats.values(),
+            key=lambda item: (
+                self._suffix_priority(str(item.get("suffix") or "")),
+                -int(item.get("count") or 0),
+                str(item.get("suffix") or ""),
+            ),
+        )
+        return {
+            "total_files": total_files,
+            "unique_formats": len(stats),
+            "formats": ordered[:render_format_limit],
+            "additional_format_count": max(0, len(ordered) - render_format_limit),
+        }
+
+    def _suffix_priority(self, suffix: str) -> tuple[int, int]:
+        normalized = str(suffix or "").lower()
+        try:
+            return (0, self._preferred_inventory_suffixes.index(normalized))
+        except ValueError:
+            return (1, 0)
+
+    def _render_inventory_block(self, inventory: dict[str, Any]) -> list[str]:
+        total_files = inventory.get("total_files")
+        unique_formats = inventory.get("unique_formats")
+        formats = inventory.get("formats") if isinstance(inventory.get("formats"), list) else []
+        additional = inventory.get("additional_format_count")
+        if not isinstance(total_files, int):
+            return []
+
+        lines = [
+            "File inventory:",
+            f"- Total files: {total_files}",
+        ]
+        if isinstance(unique_formats, int):
+            lines.append(f"- Unique formats: {unique_formats}")
+        if formats:
+            lines.append("Formats and representative files (max 10 per format):")
+            for item in formats:
+                if not isinstance(item, dict):
+                    continue
+                suffix = str(item.get("suffix") or "[no extension]")
+                count = int(item.get("count") or 0)
+                lines.append(f"- {suffix}: {count} file(s)")
+                samples = item.get("samples") if isinstance(item.get("samples"), list) else []
+                for sample in samples[:10]:
+                    lines.append(f"  - {sample}")
+        if isinstance(additional, int) and additional > 0:
+            lines.append(f"- ... {additional} more format(s) not shown")
+        return lines
 
     def _should_ignore(self, path: Path, workspace_path: Path) -> bool:
         try:

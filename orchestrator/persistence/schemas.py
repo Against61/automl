@@ -245,6 +245,7 @@ class PlannerStep(BaseModel):
             self.step_intent = self._infer_step_intent()
         if self.operation == StepOperation.general:
             self.operation = self._infer_operation()
+        self._ensure_default_metrics_artifact()
         if self.step_intent == StepIntent.run_training:
             if self.command and self.command not in self.commands:
                 self.commands.append(self.command)
@@ -275,6 +276,60 @@ class PlannerStep(BaseModel):
         if not self.expected_outputs.stop_condition:
             self.expected_outputs.stop_condition = self.stop_condition
         return self
+
+    def _ensure_default_metrics_artifact(self) -> None:
+        if self.step_intent not in {StepIntent.run_training, StepIntent.verify_metrics}:
+            return
+
+        metric_keys = [str(item).strip() for item in self.expected_outputs.metrics_required if str(item).strip()]
+        metric_spec: ArtifactSpec | None = None
+        for artifact in self.expected_artifacts:
+            if artifact.kind == ArtifactKind.metrics:
+                metric_spec = artifact
+                break
+
+        if metric_spec is None:
+            metric_spec = ArtifactSpec(
+                path="metrics.json",
+                kind=ArtifactKind.metrics,
+                must_exist=True,
+                must_be_nonempty=True,
+                metric_keys=metric_keys,
+            )
+            self.expected_artifacts.append(metric_spec)
+        else:
+            if not metric_spec.path:
+                metric_spec.path = "metrics.json"
+            metric_spec.must_exist = True
+            metric_spec.must_be_nonempty = True
+            if metric_keys:
+                seen_metric_keys = set(metric_spec.metric_keys)
+                for key in metric_keys:
+                    if key not in seen_metric_keys:
+                        metric_spec.metric_keys.append(key)
+                        seen_metric_keys.add(key)
+
+        if not self.expected_outputs.artifacts:
+            self.expected_outputs.artifacts = list(self.expected_artifacts)
+        else:
+            output_metric_spec: ArtifactSpec | None = None
+            for artifact in self.expected_outputs.artifacts:
+                if artifact.kind == ArtifactKind.metrics:
+                    output_metric_spec = artifact
+                    break
+            if output_metric_spec is None:
+                self.expected_outputs.artifacts.append(metric_spec.model_copy(deep=True))
+            else:
+                if not output_metric_spec.path:
+                    output_metric_spec.path = "metrics.json"
+                output_metric_spec.must_exist = True
+                output_metric_spec.must_be_nonempty = True
+                if metric_keys:
+                    seen_metric_keys = set(output_metric_spec.metric_keys)
+                    for key in metric_keys:
+                        if key not in seen_metric_keys:
+                            output_metric_spec.metric_keys.append(key)
+                            seen_metric_keys.add(key)
 
     @staticmethod
     def _artifact_spec_from_text(text: str) -> ArtifactSpec:
@@ -403,6 +458,8 @@ class RunRecord(BaseModel):
     status: RunStatus
     created_at: datetime
     updated_at: datetime
+    execution_cycle: int = 0
+    cycle_started_at: datetime | None = None
     attempts_by_stage: dict[str, int] = Field(default_factory=dict)
     next_step_index: int = 0
     plan_json: dict[str, Any] | None = None
