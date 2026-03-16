@@ -66,6 +66,7 @@ class RunVerificationStage:
 
         verification = await self.verifier.run(
             workspace_path,
+            run_id=run_id,
             task=task,
             story_id=self.ralph_service.extract_story_id(task),
         )

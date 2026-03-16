@@ -153,6 +153,60 @@ def test_read_workspace_metrics_discovers_nested_metrics_json(tmp_path: Path):
     assert metrics.get("loss") == pytest.approx(1.988, rel=1e-6)
 
 
+def test_read_workspace_metrics_with_run_id_prefers_only_current_run_scoped_metrics(tmp_path: Path):
+    verifier = _make_verifier(tmp_path)
+    workspace = tmp_path / "workspace"
+    current_run_metrics = workspace / ".openin" / "runs" / "run-current" / "metrics.json"
+    current_run_metrics.parent.mkdir(parents=True, exist_ok=True)
+    current_run_metrics.write_text(
+        json.dumps(
+            {
+                "dice": 45.0,
+                "eval_accuracy": 0.48,
+                "split_integrity_passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / ".openin" / "check_preflight_metrics.json").write_text(
+        json.dumps(
+            {
+                "dice": 99.3,
+                "eval_accuracy": 0.99,
+                "metrics_artifact_kind": "preflight",
+            }
+        ),
+        encoding="utf-8",
+    )
+    foreign_metrics = workspace / ".openin" / "runs" / "run-foreign" / "metrics.json"
+    foreign_metrics.parent.mkdir(parents=True, exist_ok=True)
+    foreign_metrics.write_text(
+        json.dumps({"dice": 88.0, "eval_accuracy": 0.88}),
+        encoding="utf-8",
+    )
+
+    metrics = verifier._read_workspace_metrics(workspace, run_id="run-current")
+
+    assert metrics.get("dice") == pytest.approx(45.0, rel=1e-6)
+    assert metrics.get("eval_accuracy") == pytest.approx(0.48, rel=1e-6)
+    assert metrics.get("metrics_artifact_kind") is None
+
+
+def test_read_workspace_metrics_with_run_id_does_not_fall_back_to_preflight(tmp_path: Path):
+    verifier = _make_verifier(tmp_path)
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / ".openin" / "runs" / "run-current"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "preflight_metrics.json").write_text(
+        json.dumps({"dice": 99.3, "eval_accuracy": 0.99}),
+        encoding="utf-8",
+    )
+
+    metrics = verifier._read_workspace_metrics(workspace, run_id="run-current")
+
+    assert metrics == {}
+
+
 def test_read_workspace_metrics_recursively_extracts_nested_iou_metrics(tmp_path: Path):
     verifier = _make_verifier(tmp_path)
     workspace = tmp_path / "workspace"
@@ -231,6 +285,45 @@ async def test_verifier_adds_intent_validation_details_when_metrics_primary_metr
     assert result.details["task_intent"]["task_family"] == "segmentation"
     assert result.details["intent_validation"]["status"] == "passed"
     assert result.metrics["metric_intent_drift_detected"] is False
+
+
+@pytest.mark.asyncio
+async def test_verifier_run_ignores_stale_workspace_metrics_when_run_id_is_provided(tmp_path: Path):
+    verifier = _make_verifier(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    current_run_metrics = workspace / ".openin" / "runs" / "run-current" / "metrics.json"
+    current_run_metrics.parent.mkdir(parents=True, exist_ok=True)
+    current_run_metrics.write_text(
+        json.dumps(
+            {
+                "task_family": "segmentation",
+                "primary_metric_key": "dice",
+                "dice": 45.0,
+                "eval_accuracy": 0.48,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / ".openin" / "check_preflight_metrics.json").write_text(
+        json.dumps(
+            {
+                "task_family": "segmentation",
+                "primary_metric_key": "dice",
+                "dice": 99.3,
+                "eval_accuracy": 0.99,
+            }
+        ),
+        encoding="utf-8",
+    )
+    task = {
+        "goal": "Train segmentation model on coco dataset",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: dice >= 95%"]),
+    }
+
+    result = await verifier.run(workspace, run_id="run-current", task=task)
+
+    assert result.metrics["dice"] == pytest.approx(45.0, rel=1e-6)
 
 
 @pytest.mark.asyncio

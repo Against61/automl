@@ -2806,3 +2806,43 @@ async def test_planner_failure_marks_run_failed(tmp_path: Path):
     assert run.status == RunStatus.FAILED
     assert "planner error" in (run.error_message or "")
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_execution_guard_detects_foreign_run_scoped_metrics_path(tmp_path: Path):
+    session, db, bus, _, _ = await create_session(tmp_path)
+    try:
+        service = session._process_run_uc.execution_guard_service
+        step = PlannerStep(
+            id="step-4",
+            title="Run training or smoke evaluation",
+            action="shell",
+            step_intent="run_training",
+            instruction="run training",
+            command="python run_task.py --epochs 1 --metrics-path metrics.json",
+            risk_level="medium",
+        )
+        result = StepExecutionResult(
+            status="completed",
+            exit_code=0,
+            summary="command completed",
+            stdout_text="",
+            stderr_text="",
+            duration_ms=1000,
+            command=(
+                "python run_task.py --epochs 1 "
+                "--metrics-path .openin/runs/712bda6a-2a59-4729-bed7-1f5a72d9d837/metrics.json"
+            ),
+        )
+
+        reason = service.foreign_run_metrics_path_reason(
+            run_id="6fa1df43-2f2d-4353-930d-8e72cc97ff82",
+            step=step,
+            result=result,
+        )
+
+        assert reason is not None
+        assert "foreign run-scoped metrics path" in reason
+    finally:
+        await bus.close()
+        await db.close()

@@ -31,12 +31,13 @@ class Verifier:
         self,
         workspace_path: Path,
         *,
+        run_id: str | None = None,
         task: dict[str, Any] | None = None,
         story_id: str | None = None,
     ) -> VerificationResult:
         commands = self.settings.verify_command_list
         if not commands:
-            metrics = self._read_workspace_metrics(workspace_path)
+            metrics = self._read_workspace_metrics(workspace_path, run_id=run_id)
             return VerificationResult(
                 status="passed",
                 passed=True,
@@ -80,7 +81,7 @@ class Verifier:
             )
 
             metrics.update(self._extract_metrics_from_text(f"{stdout_text}\n{stderr_text}"))
-            workspace_metrics = self._read_workspace_metrics(workspace_path)
+            workspace_metrics = self._read_workspace_metrics(workspace_path, run_id=run_id)
             metrics.update(workspace_metrics)
 
             if not status_ok:
@@ -113,7 +114,17 @@ class Verifier:
     def _extract_metrics_from_text(self, text: str) -> dict[str, float | int | str | bool]:
         return extract_metrics_from_text(text)
 
-    def _read_workspace_metrics(self, workspace_path: Path) -> dict[str, float | int | str | bool]:
+    def _read_workspace_metrics(
+        self,
+        workspace_path: Path,
+        *,
+        run_id: str | None = None,
+    ) -> dict[str, float | int | str | bool]:
+        if run_id:
+            return self.workspace_metrics_reader.read_run_scoped_metrics(
+                workspace_path,
+                run_id=run_id,
+            )
         return self.workspace_metrics_reader.read_workspace_metrics(workspace_path)
 
     def _extract_metrics_from_markdown_table(self, text: str) -> dict[str, float | int | str | bool]:

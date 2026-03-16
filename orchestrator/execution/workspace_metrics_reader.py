@@ -15,14 +15,34 @@ from orchestrator.execution.metric_parsing import (
 
 
 class WorkspaceMetricsReader:
-    def read_workspace_metrics(self, workspace_path: Path) -> dict[str, float | int | str | bool]:
+    def read_workspace_metrics(
+        self,
+        workspace_path: Path,
+        *,
+        preferred_json_paths: list[Path] | None = None,
+        allow_workspace_fallback: bool = True,
+    ) -> dict[str, float | int | str | bool]:
         structured_metrics: dict[str, float | int | str | bool] = {}
         fallback_metrics: dict[str, float | int | str | bool] = {}
-        candidates: list[Path] = [
-            workspace_path / "metrics.json",
-            workspace_path / "results.json",
-            workspace_path / "metrics.md",
-        ]
+        candidates: list[Path] = []
+        if preferred_json_paths:
+            candidates.extend(path for path in preferred_json_paths if isinstance(path, Path))
+        if not allow_workspace_fallback:
+            for path in candidates:
+                if not path.is_file():
+                    continue
+                if path.suffix.lower() == ".json":
+                    for key, value in self.read_json_metrics(path).items():
+                        structured_metrics.setdefault(key, value)
+            return dict(structured_metrics)
+
+        candidates.extend(
+            [
+                workspace_path / "metrics.json",
+                workspace_path / "results.json",
+                workspace_path / "metrics.md",
+            ]
+        )
         for pattern in ("*metrics*.json", "*metrics*.md", "*metrics*.markdown"):
             for path in sorted(workspace_path.rglob(pattern)):
                 if path not in candidates:
@@ -48,6 +68,23 @@ class WorkspaceMetricsReader:
         for key, value in fallback_metrics.items():
             merged.setdefault(key, value)
         return merged
+
+    def read_run_scoped_metrics(
+        self,
+        workspace_path: Path,
+        *,
+        run_id: str,
+    ) -> dict[str, float | int | str | bool]:
+        if not str(run_id).strip():
+            return {}
+        preferred = [
+            workspace_path / ".openin" / "runs" / str(run_id) / "metrics.json",
+        ]
+        return self.read_workspace_metrics(
+            workspace_path,
+            preferred_json_paths=preferred,
+            allow_workspace_fallback=False,
+        )
 
     def extract_metrics_from_markdown_table(self, text: str) -> dict[str, float | int | str | bool]:
         lines = [line.strip() for line in text.splitlines() if line.strip()]

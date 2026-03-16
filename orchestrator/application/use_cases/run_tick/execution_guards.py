@@ -24,6 +24,9 @@ from orchestrator.persistence.schemas import (
 
 logger = logging.getLogger(__name__)
 _MISSING_MODULE_RE = re.compile(r"No module named ['\"]([^'\"]+)['\"]")
+_RUN_SCOPED_METRICS_PATH_RE = re.compile(
+    r"(?:^|[\s\"'=])(?P<path>(?:\./)?\.openin/runs/(?P<run_id>[0-9a-fA-F-]{36})/(?P<name>(?:preflight_)?metrics\.json))(?=$|[\s\"'])"
+)
 
 
 class ExecutionGuardService:
@@ -304,6 +307,29 @@ class ExecutionGuardService:
         if not reason:
             return None
         return f"dependency recovery required after training step: {reason}; environment change required before rerun"
+
+    def foreign_run_metrics_path_reason(
+        self,
+        *,
+        run_id: str,
+        step: PlannerStep,
+        result: StepExecutionResult,
+    ) -> str | None:
+        if step.action != "shell" or step.step_intent != StepIntent.run_training:
+            return None
+        command = str(result.command or step.command or "").strip()
+        if not command:
+            return None
+        for match in _RUN_SCOPED_METRICS_PATH_RE.finditer(command):
+            target_run_id = str(match.group("run_id") or "").strip()
+            target_path = str(match.group("path") or "").strip()
+            if not target_run_id or target_run_id == str(run_id):
+                continue
+            return (
+                f"training step used foreign run-scoped metrics path `{target_path}` "
+                f"instead of the current run `{run_id}`"
+            )
+        return None
 
     def _structured_dependency_issue_reason(self, candidate_paths: list[Path]) -> str | None:
         seen: set[Path] = set()

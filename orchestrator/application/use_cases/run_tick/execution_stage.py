@@ -220,6 +220,15 @@ class RunExecutionStage:
                 await self.set_status(run_id, RunStatus.FAILED, dependency_issue, None)
                 return "continue"
 
+            foreign_metrics_path_issue = self.execution_guard_service.foreign_run_metrics_path_reason(
+                run_id=run_id,
+                step=step,
+                result=result,
+            )
+            if foreign_metrics_path_issue:
+                await self.set_status(run_id, RunStatus.FAILED, foreign_metrics_path_issue, None)
+                return "continue"
+
             if result.status == "completed":
                 if not plan_contract_ok:
                     if self.settings.execution_failure_replan_enabled:
