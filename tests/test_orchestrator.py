@@ -357,6 +357,56 @@ def test_shell_command_rewrites_missing_relative_file_argument_to_existing_works
     assert "scripts/metrics.py" not in normalized
 
 
+def test_shell_command_keeps_metrics_output_path_literal_even_when_stale_metrics_exist(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        llm_provider="stub",
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace" / "demo",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+    )
+    workspace = settings.workspace_root
+    (workspace / ".openin" / "runs" / "712bda6a-2a59-4729-bed7-1f5a72d9d837").mkdir(parents=True, exist_ok=True)
+    (workspace / ".openin" / "runs" / "712bda6a-2a59-4729-bed7-1f5a72d9d837" / "metrics.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+
+    runner = CodexRunner(settings)
+    normalized = runner._sanitize_shell_command(
+        "python run_task.py --epochs 1 --metrics-path metrics.json",
+        workspace,
+    )
+
+    assert normalized == "python run_task.py --epochs 1 --metrics-path metrics.json"
+
+
+def test_shell_command_keeps_preflight_metrics_output_path_literal(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        llm_provider="stub",
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace" / "demo",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+    )
+    workspace = settings.workspace_root
+    (workspace / ".openin" / "runs" / "5b3c87da-8e6e-4caa-be04-df40e805cb97").mkdir(parents=True, exist_ok=True)
+    (workspace / ".openin" / "runs" / "5b3c87da-8e6e-4caa-be04-df40e805cb97" / "preflight_metrics.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+
+    runner = CodexRunner(settings)
+    normalized = runner._sanitize_shell_command(
+        "python run_task.py --preflight --metrics-path preflight_metrics.json",
+        workspace,
+    )
+
+    assert normalized == "python run_task.py --preflight --metrics-path preflight_metrics.json"
+
+
 @pytest.mark.asyncio
 async def test_set_approved_preserves_waiting_plan_review_status(tmp_path: Path):
     settings = Settings(

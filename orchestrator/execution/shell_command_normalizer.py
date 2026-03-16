@@ -6,6 +6,23 @@ from pathlib import Path
 
 
 class ShellCommandNormalizer:
+    _OUTPUT_PATH_FLAGS = {
+        "--metrics-path",
+        "--output",
+        "--output-path",
+        "--results-path",
+        "--report-path",
+        "--artifact-path",
+        "--preflight-metrics-path",
+    }
+    _OUTPUT_FILENAMES = {
+        "metrics.json",
+        "preflight_metrics.json",
+        "results.json",
+        "metrics.md",
+        "metrics.markdown",
+    }
+
     def shell_primary_binary(self, command: str) -> str:
         try:
             tokens = shlex.split(command)
@@ -233,6 +250,9 @@ class ShellCommandNormalizer:
             if idx == 0 or token.startswith("-") or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token):
                 result_tokens.append(token)
                 continue
+            if self.should_preserve_output_path_token(tokens=tokens, idx=idx):
+                result_tokens.append(token)
+                continue
             replacement = self.resolve_relative_file_argument(token, workspace_path)
             if replacement and replacement != token:
                 result_tokens.append(replacement)
@@ -242,6 +262,19 @@ class ShellCommandNormalizer:
         if not rewritten:
             return command
         return " ".join(shlex.quote(token) for token in result_tokens)
+
+    def should_preserve_output_path_token(self, *, tokens: list[str], idx: int) -> bool:
+        token = tokens[idx]
+        basename = Path(token).name.lower()
+        if basename not in self._OUTPUT_FILENAMES:
+            return False
+        if idx > 0 and tokens[idx - 1] in self._OUTPUT_PATH_FLAGS:
+            return True
+        if idx > 0 and tokens[idx - 1] in {">", ">>", "1>", "2>"}:
+            return True
+        if basename in {"metrics.json", "preflight_metrics.json"}:
+            return True
+        return False
 
     def resolve_relative_file_argument(self, token: str, workspace_path: Path) -> str | None:
         if not token or token.startswith(("/", "~")):
