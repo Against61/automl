@@ -25,6 +25,7 @@ class ImprovementStrategyService:
         previous_verification: dict[str, Any] | None,
         quality_reason: str,
         experiment_history: list[dict[str, Any]] | None = None,
+        micro_training_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         requirement = self.quality_gate_service.extract_requirement(
             task=task,
@@ -76,7 +77,11 @@ class ImprovementStrategyService:
             latest_hyperparameters=latest_hyperparameters,
             experiment_history=experiment_attempts,
         )
-        chosen = candidates[0] if candidates else {}
+        chosen, selection_reason = self._select_intervention(
+            candidates=candidates,
+            previous_verification=previous_verification,
+            micro_training_policy=micro_training_policy,
+        )
         attempt_number = int(previous_verification.get("attempt", 0) if isinstance(previous_verification, dict) else 0) + 1
         strategy_path = self._strategy_path(workspace_path, run_id=run_id, attempt_number=attempt_number)
 
@@ -105,8 +110,13 @@ class ImprovementStrategyService:
             "candidate_interventions": candidates,
             "chosen_intervention_id": chosen.get("id"),
             "chosen_intervention": chosen,
+            "selection_reason": selection_reason,
+            "micro_training_policy": micro_training_policy or None,
             "research_tasks": self._research_tasks(diagnosis=diagnosis, available_skills=relevant_skills or available_skills),
-            "planner_directives": self._planner_directives(chosen=chosen),
+            "planner_directives": self._planner_directives(
+                chosen=chosen,
+                micro_training_policy=micro_training_policy,
+            ),
             "recommended_skills": relevant_skills,
             "available_skills": available_skills,
             "artifact_path": str(strategy_path.relative_to(workspace_path)),
@@ -325,7 +335,12 @@ class ImprovementStrategyService:
             tasks.append(f"Apply workspace skill instructions before coding: {names}.")
         return tasks
 
-    def _planner_directives(self, *, chosen: dict[str, Any]) -> list[str]:
+    def _planner_directives(
+        self,
+        *,
+        chosen: dict[str, Any],
+        micro_training_policy: dict[str, Any] | None = None,
+    ) -> list[str]:
         directives = [
             "Start next plan with chosen_intervention actions before generic hyperparameter search.",
             "Do not repeat same failed hyperparameter set unless rationale is explicit.",
@@ -338,7 +353,58 @@ class ImprovementStrategyService:
                 "Apply these skills as execution context before coding: "
                 + ", ".join(skill_paths[:4])
             )
+        if isinstance(micro_training_policy, dict):
+            next_epochs = micro_training_policy.get("next_epochs")
+            if next_epochs is not None:
+                directives.append(
+                    f"Use the next micro-training stage budget of {next_epochs} epoch(s) for the next shell training run."
+                )
+            if micro_training_policy.get("force_strategy_reset") is True:
+                directives.append(
+                    "Change training strategy before the next 1-epoch baseline and do not reuse the previous intervention unchanged."
+                )
         return directives
+
+    def _select_intervention(
+        self,
+        *,
+        candidates: list[dict[str, Any]],
+        previous_verification: dict[str, Any] | None,
+        micro_training_policy: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], str]:
+        if not candidates:
+            return {}, "no_candidate_interventions_available"
+
+        default_choice = candidates[0]
+        if not isinstance(micro_training_policy, dict) or micro_training_policy.get("force_strategy_reset") is not True:
+            return default_choice, "default_primary_candidate"
+
+        previous_choice_id = None
+        if isinstance(previous_verification, dict):
+            strategy = previous_verification.get("improvement_strategy")
+            if isinstance(strategy, dict):
+                previous_choice_id = (
+                    strategy.get("chosen_intervention_id")
+                    or (
+                        strategy.get("chosen_intervention", {}).get("id")
+                        if isinstance(strategy.get("chosen_intervention"), dict)
+                        else None
+                    )
+                )
+        for candidate in candidates:
+            candidate_id = str(candidate.get("id") or "").strip()
+            if not candidate_id:
+                continue
+            if previous_choice_id and candidate_id == previous_choice_id:
+                continue
+            return (
+                candidate,
+                (
+                    f"rotated away from {previous_choice_id or default_choice.get('id', 'current_strategy')} "
+                    f"after {micro_training_policy.get('reason') or 'micro-training exhaustion'}"
+                ),
+            )
+        return default_choice, "forced_strategy_reset_requested_but_no_alternative_candidate_available"
 
     def _select_relevant_skills(
         self,

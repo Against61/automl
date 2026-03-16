@@ -33,6 +33,7 @@ class PlanInput:
     previous_error: str | None = None
     last_failed_step: dict[str, Any] | None = None
     previous_verification: dict[str, Any] | None = None
+    micro_training_policy: dict[str, Any] | None = None
 
 
 class Planner:
@@ -204,11 +205,29 @@ class StubPlanner(Planner):
             goal=payload.goal,
             constraints=payload.constraints,
         )
+        micro_training_policy = payload.micro_training_policy if isinstance(payload.micro_training_policy, dict) else {}
+        micro_training_block = (
+            json.dumps(
+                _PROMPT_CONTENT.compact_json_for_prompt(micro_training_policy),
+                ensure_ascii=True,
+                indent=2,
+            )
+            if micro_training_policy
+            else "none"
+        )
         stub_intent = resolve_stub_plan_intent(payload, inferred_intent)
         task_family = stub_intent.task_family
         primary_metric_key = stub_intent.primary_metric_key
         preferred_metrics = stub_intent.preferred_metrics
         real_dataset_smoke_required = stub_intent.real_dataset_smoke_required
+        next_training_epochs = 1
+        raw_next_epochs = micro_training_policy.get("next_epochs") if micro_training_policy else None
+        try:
+            parsed_next_epochs = int(raw_next_epochs)
+        except (TypeError, ValueError):
+            parsed_next_epochs = 1
+        if parsed_next_epochs > 0:
+            next_training_epochs = parsed_next_epochs
         intent_block = (
             f"- task_family: {task_family}\n"
             f"- primary_metric_key: {primary_metric_key or 'not set'}\n"
@@ -223,6 +242,7 @@ class StubPlanner(Planner):
             f"Retrieved context:\n{context_block}\n\n"
             f"Workspace snapshot:\n{workspace_snapshot_block}\n\n"
             f"Experiment history:\n{experiment_history_block}\n\n"
+            f"Micro-training policy:\n{micro_training_block}\n\n"
             f"Previous execution error:\n{previous_error}\n\n"
             f"Previous verification:\n{previous_verification_block}\n\n"
             f"Last failed step snapshot:\n{failed_step_block}\n\n"
@@ -347,13 +367,26 @@ class StubPlanner(Planner):
                 "Create or update a stable executable entrypoint at `run_task.py` in the workspace root.\n"
                 "The script must support a fast `--preflight` mode for the very first baseline cycle.\n"
                 "Running `python run_task.py --preflight --metrics-path preflight_metrics.json` must only validate dataset parsing, split construction, and a minimal executable smoke path before the real baseline.\n"
-                "Running `python run_task.py --metrics-path metrics.json` must execute the minimal training/evaluation flow required by the task.\n"
+                "Running `python run_task.py --epochs N --metrics-path metrics.json` must execute the minimal training/evaluation flow required by the task.\n"
+                "The script must accept `--epochs` and use it as the authoritative limit for the current micro-training cycle.\n"
                 "The script must write structured metrics to JSON and keep evaluation disjoint from training.\n"
                 "When checking overlap across different annotation json files, compare stable image identity such as `file_name` or normalized image path rather than raw COCO image ids alone.\n"
                 "Write `task_family`, `primary_metric_key`, and `evaluation_split` into `metrics.json`.\n"
                 "Codex may run only short diagnostic commands while preparing the script; do not run the full baseline training inside the Codex step.\n"
                 "Prefer reusing existing dataset paths and code if they already exist in the workspace.\n"
             )
+            if micro_training_policy:
+                step2_prompt = (
+                    f"{step2_prompt}\n"
+                    f"Micro-training requirement for the next shell training step: run exactly {next_training_epochs} epoch(s).\n"
+                    "Keep this cycle short and deterministic so the orchestrator can compare metric growth across 1, 2, and 5 epoch stages.\n"
+                )
+                if micro_training_policy.get("force_strategy_reset") is True:
+                    step2_prompt = (
+                        f"{step2_prompt}"
+                        "The previous micro-training branch is exhausted. Change training strategy before restarting from the 1-epoch baseline.\n"
+                        "Do not repeat the same recipe if the 2-epoch check did not improve the target metric or the 5-epoch run still missed the target.\n"
+                    )
             if should_use_codex_preflight(payload):
                 preflight_instruction = (
                     f"{base_prompt}\n\n"
@@ -451,10 +484,12 @@ class StubPlanner(Planner):
                     "expected_artifacts": [
                         {"path": "metrics.json", "kind": "metrics", "must_exist": True, "must_be_nonempty": True},
                     ],
-                    "stop_condition": "python run_task.py completes and writes metrics.json",
+                    "stop_condition": f"python run_task.py --epochs {next_training_epochs} completes and writes metrics.json",
                     "action": "shell",
-                    "instruction": "Execute the prepared training/evaluation entrypoint after preflight succeeds",
-                    "command": "python run_task.py --metrics-path metrics.json",
+                    "instruction": (
+                        f"Execute the prepared training/evaluation entrypoint after preflight succeeds using the current micro-training budget of {next_training_epochs} epoch(s)"
+                    ),
+                    "command": f"python run_task.py --epochs {next_training_epochs} --metrics-path metrics.json",
                     "risk_level": "medium",
                 },
                 {

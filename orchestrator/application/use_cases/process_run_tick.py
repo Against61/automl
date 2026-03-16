@@ -22,6 +22,7 @@ from orchestrator.application.services.metric_interpretation_service import Code
 from orchestrator.application.services.quality_gate_service import QualityGateService
 from orchestrator.application.services.ralph_service import RalphScenarioService
 from orchestrator.application.services.improvement_strategy_service import ImprovementStrategyService
+from orchestrator.application.services.micro_training_policy_service import MicroTrainingPolicyService
 from orchestrator.application.services.recovery_service import MissingFileRecoveryService
 from orchestrator.application.services.workspace_snapshot_service import WorkspaceSnapshotService
 from orchestrator.execution.artifacts import ArtifactPublisher
@@ -82,6 +83,7 @@ class ProcessRunTickUseCase:
             metric_interpreter=CodexMetricInterpreter(settings),
         )
         improvement_strategy_service = ImprovementStrategyService(quality_gate_service=quality_gate_service)
+        micro_training_policy_service = MicroTrainingPolicyService(quality_gate_service=quality_gate_service)
         workspace_snapshot_service = WorkspaceSnapshotService()
         ralph_service = RalphScenarioService(
             settings=settings,
@@ -120,6 +122,7 @@ class ProcessRunTickUseCase:
             planner=planner,
             policy_engine=policy_engine,
             ralph_service=ralph_service,
+            micro_training_policy_service=micro_training_policy_service,
             planning_context_service=self.planning_context_service,
             execution_guard_service=execution_guard_service,
             workspace_snapshot_service=workspace_snapshot_service,
@@ -148,6 +151,7 @@ class ProcessRunTickUseCase:
             verification_flow_service=verification_flow_service,
             execution_guard_service=execution_guard_service,
             improvement_strategy_service=improvement_strategy_service,
+            micro_training_policy_service=micro_training_policy_service,
             ralph_service=ralph_service,
             set_status=self.coordinator_support_service.set_status,
             schedule_replan=self.coordinator_support_service.schedule_replan,

@@ -9,6 +9,7 @@ import pytest
 
 from orchestrator.application.services.plan_contract_service import PlanContractService
 from orchestrator.application.services.improvement_strategy_service import ImprovementStrategyService
+from orchestrator.application.services.micro_training_policy_service import MicroTrainingPolicyService
 from orchestrator.application.services.metric_interpretation_service import MetricInterpretation
 from orchestrator.application.services.prompt_content_service import PromptContentService
 from orchestrator.application.services.quality_gate_service import QualityGateService
@@ -937,6 +938,153 @@ def test_improvement_strategy_service_builds_strategy_and_artifact(tmp_path: Pat
     assert artifact.exists()
 
 
+def test_micro_training_policy_starts_with_one_epoch_baseline(tmp_path: Path):
+    backlog = RalphBacklogService()
+    quality = QualityGateService(ralph_backlog=backlog)
+    service = MicroTrainingPolicyService(quality_gate_service=quality)
+
+    task = {
+        "goal": "Improve segmentation quality",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: iou >= 95%"]),
+    }
+
+    policy = service.build_from_previous_verification(
+        task=task,
+        workspace_path=tmp_path,
+        previous_verification=None,
+    )
+
+    assert policy["next_epochs"] == 1
+    assert policy["phase"] == "baseline"
+    assert policy["force_strategy_reset"] is False
+
+
+def test_micro_training_policy_promotes_from_one_epoch_to_two(tmp_path: Path):
+    backlog = RalphBacklogService()
+    quality = QualityGateService(ralph_backlog=backlog)
+    service = MicroTrainingPolicyService(quality_gate_service=quality)
+
+    task = {
+        "goal": "Improve segmentation quality",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: iou >= 95%"]),
+    }
+    previous_verification = {
+        "attempt": 1,
+        "metrics": {"eval_mean_iou": 0.61},
+        "latest_hyperparameters": {"epochs": 1},
+        "quality_gate": {"status": "failed", "reason": "quality gate failed"},
+    }
+
+    policy = service.build_from_previous_verification(
+        task=task,
+        workspace_path=tmp_path,
+        previous_verification=previous_verification,
+    )
+
+    assert policy["next_epochs"] == 2
+    assert policy["phase"] == "growth_check"
+    assert policy["force_strategy_reset"] is False
+
+
+def test_micro_training_policy_promotes_to_five_epochs_when_metric_grows(tmp_path: Path):
+    backlog = RalphBacklogService()
+    quality = QualityGateService(ralph_backlog=backlog)
+    service = MicroTrainingPolicyService(quality_gate_service=quality)
+
+    task = {
+        "goal": "Improve segmentation quality",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: iou >= 95%"]),
+    }
+    previous_verification = {
+        "attempt": 2,
+        "metrics": {"eval_mean_iou": 0.68},
+        "latest_hyperparameters": {"epochs": 2},
+        "quality_gate": {"status": "failed", "reason": "quality gate failed"},
+        "history": [
+            {
+                "attempt": 1,
+                "metrics": {"eval_mean_iou": 0.61},
+                "latest_hyperparameters": {"epochs": 1},
+                "quality_gate": {"status": "failed", "reason": "quality gate failed"},
+            }
+        ],
+    }
+
+    policy = service.build_from_previous_verification(
+        task=task,
+        workspace_path=tmp_path,
+        previous_verification=previous_verification,
+    )
+
+    assert policy["next_epochs"] == 5
+    assert policy["phase"] == "expand"
+    assert policy["metric_growth"] == pytest.approx(0.07, rel=1e-6)
+    assert policy["force_strategy_reset"] is False
+
+
+def test_micro_training_policy_resets_strategy_when_two_epoch_run_does_not_improve(tmp_path: Path):
+    backlog = RalphBacklogService()
+    quality = QualityGateService(ralph_backlog=backlog)
+    service = MicroTrainingPolicyService(quality_gate_service=quality)
+
+    task = {
+        "goal": "Improve segmentation quality",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: iou >= 95%"]),
+    }
+    previous_verification = {
+        "attempt": 2,
+        "metrics": {"eval_mean_iou": 0.60},
+        "latest_hyperparameters": {"epochs": 2},
+        "quality_gate": {"status": "failed", "reason": "quality gate failed"},
+        "history": [
+            {
+                "attempt": 1,
+                "metrics": {"eval_mean_iou": 0.61},
+                "latest_hyperparameters": {"epochs": 1},
+                "quality_gate": {"status": "failed", "reason": "quality gate failed"},
+            }
+        ],
+    }
+
+    policy = service.build_from_previous_verification(
+        task=task,
+        workspace_path=tmp_path,
+        previous_verification=previous_verification,
+    )
+
+    assert policy["next_epochs"] == 1
+    assert policy["phase"] == "reset_strategy"
+    assert policy["force_strategy_reset"] is True
+
+
+def test_micro_training_policy_resets_strategy_after_failed_five_epoch_run(tmp_path: Path):
+    backlog = RalphBacklogService()
+    quality = QualityGateService(ralph_backlog=backlog)
+    service = MicroTrainingPolicyService(quality_gate_service=quality)
+
+    task = {
+        "goal": "Improve segmentation quality",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: iou >= 95%"]),
+    }
+    previous_verification = {
+        "attempt": 3,
+        "metrics": {"eval_mean_iou": 0.72},
+        "latest_hyperparameters": {"epochs": 5},
+        "quality_gate": {"status": "failed", "reason": "quality gate failed"},
+        "history": [],
+    }
+
+    policy = service.build_from_previous_verification(
+        task=task,
+        workspace_path=tmp_path,
+        previous_verification=previous_verification,
+    )
+
+    assert policy["next_epochs"] == 1
+    assert policy["phase"] == "reset_strategy"
+    assert policy["force_strategy_reset"] is True
+
+
 def test_quality_gate_service_selects_real_accuracy_not_sample_count_metric() -> None:
     quality = QualityGateService(ralph_backlog=RalphBacklogService())
     metrics = {
@@ -1419,3 +1567,45 @@ def test_improvement_strategy_service_compacts_experiment_history_strategies(tmp
     assert history_item["strategy"]["chosen_intervention_id"] == "capacity_and_schedule_upgrade"
     assert "history" not in history_item["strategy"]
     assert "candidate_interventions" not in history_item["strategy"]
+
+
+def test_improvement_strategy_service_rotates_intervention_when_micro_training_branch_is_exhausted(tmp_path: Path):
+    backlog = RalphBacklogService()
+    quality = QualityGateService(ralph_backlog=backlog)
+    service = ImprovementStrategyService(quality_gate_service=quality)
+
+    task = {
+        "goal": "Improve classification quality",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 97%"]),
+    }
+    verification = VerificationResult(
+        status="passed",
+        passed=True,
+        commands=[],
+        metrics={"train_accuracy": 0.95, "eval_accuracy": 0.88},
+    )
+    previous_verification = {
+        "attempt": 2,
+        "improvement_strategy": {
+            "chosen_intervention_id": "capacity_and_schedule_upgrade",
+            "chosen_intervention": {"id": "capacity_and_schedule_upgrade"},
+        },
+    }
+
+    strategy = service.build_for_quality_failure(
+        run_id="run-rotate-micro-policy",
+        task=task,
+        workspace_path=tmp_path,
+        verification=verification,
+        previous_verification=previous_verification,
+        quality_reason="quality gate failed",
+        micro_training_policy={
+            "force_strategy_reset": True,
+            "reason": "metric did not improve from 1 to 2 epochs",
+            "next_epochs": 1,
+        },
+    )
+
+    assert strategy["chosen_intervention_id"] != "capacity_and_schedule_upgrade"
+    assert "rotated away from capacity_and_schedule_upgrade" in strategy["selection_reason"]
+    assert any("1 epoch" in item for item in strategy["planner_directives"])

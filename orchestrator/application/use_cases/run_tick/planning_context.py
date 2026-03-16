@@ -25,6 +25,7 @@ class PlanningContextService:
         experiment_history_summary: str | None,
         last_failed_step: dict[str, Any] | None,
         previous_verification: dict[str, Any] | None = None,
+        micro_training_policy: dict[str, Any] | None = None,
     ) -> PlanInput:
         return PlanInput(
             goal=task["goal"],
@@ -36,6 +37,7 @@ class PlanningContextService:
             previous_error=run.error_message,
             last_failed_step=last_failed_step,
             previous_verification=previous_verification,
+            micro_training_policy=micro_training_policy,
         )
 
     def latest_verification_snapshot(self, verification_json: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -55,6 +57,7 @@ class PlanningContextService:
                 "quality_gate",
                 "attempt",
                 "latest_attempt",
+                "micro_training_policy",
             }
         }
         history_raw = verification_json.get("history")
@@ -76,6 +79,7 @@ class PlanningContextService:
         if strategy:
             snapshot["improvement_strategy"] = strategy
         if compact_history:
+            snapshot["history"] = compact_history
             snapshot["attempt_history"] = compact_history
         return snapshot
 

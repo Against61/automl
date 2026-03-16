@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 from orchestrator.application.services.ralph_service import RalphScenarioService
+from orchestrator.application.services.micro_training_policy_service import MicroTrainingPolicyService
 from orchestrator.application.services.workspace_snapshot_service import WorkspaceSnapshotService
 from orchestrator.application.use_cases.run_tick.execution_guards import ExecutionGuardService
 from orchestrator.application.use_cases.run_tick.planning_context import PlanningContextService
@@ -27,6 +28,7 @@ class RunPlanningStage:
         planner: Planner,
         policy_engine: PolicyEngine,
         ralph_service: RalphScenarioService,
+        micro_training_policy_service: MicroTrainingPolicyService,
         planning_context_service: PlanningContextService,
         execution_guard_service: ExecutionGuardService,
         workspace_snapshot_service: WorkspaceSnapshotService,
@@ -38,6 +40,7 @@ class RunPlanningStage:
         self.planner = planner
         self.policy_engine = policy_engine
         self.ralph_service = ralph_service
+        self.micro_training_policy_service = micro_training_policy_service
         self.planning_context_service = planning_context_service
         self.execution_guard_service = execution_guard_service
         self.workspace_snapshot_service = workspace_snapshot_service
@@ -61,6 +64,11 @@ class RunPlanningStage:
         experiment_history = await self.planning_context_service.list_experiment_history(run=run, task=task)
         experiment_history_summary = self.planning_context_service.format_experiment_history_summary(
             experiment_history
+        )
+        micro_training_policy = self.micro_training_policy_service.build_from_previous_verification(
+            task=task,
+            workspace_path=workspace_path,
+            previous_verification=previous_verification,
         )
 
         missing_quality_reason = self.ralph_service.ralph_quality_requirement_missing_reason(
@@ -102,6 +110,7 @@ class RunPlanningStage:
                 experiment_history_summary=experiment_history_summary,
                 last_failed_step=last_failed_step,
                 previous_verification=previous_verification,
+                micro_training_policy=micro_training_policy,
             )
             previous_plan: PlannerPlan | None = None
             if run.plan_json:

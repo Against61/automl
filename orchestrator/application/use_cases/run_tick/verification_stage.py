@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 from orchestrator.application.services.improvement_strategy_service import ImprovementStrategyService
+from orchestrator.application.services.micro_training_policy_service import MicroTrainingPolicyService
 from orchestrator.application.services.ralph_service import RalphScenarioService
 from orchestrator.application.use_cases.run_tick.execution_guards import ExecutionGuardService
 from orchestrator.application.use_cases.run_tick.hyperparameters import HyperparameterService
@@ -33,6 +34,7 @@ class RunVerificationStage:
         verification_flow_service: VerificationFlowService,
         execution_guard_service: ExecutionGuardService,
         improvement_strategy_service: ImprovementStrategyService,
+        micro_training_policy_service: MicroTrainingPolicyService,
         ralph_service: RalphScenarioService,
         set_status: Callable[[str, RunStatus, str | None, RunRecord | None], Awaitable[None]],
         schedule_replan: Callable[..., Awaitable[int]],
@@ -46,6 +48,7 @@ class RunVerificationStage:
         self.verification_flow_service = verification_flow_service
         self.execution_guard_service = execution_guard_service
         self.improvement_strategy_service = improvement_strategy_service
+        self.micro_training_policy_service = micro_training_policy_service
         self.ralph_service = ralph_service
         self.set_status = set_status
         self.schedule_replan = schedule_replan
@@ -100,6 +103,13 @@ class RunVerificationStage:
                 "status": "passed" if quality_ok else "failed",
                 "reason": quality_reason,
             }
+            micro_training_policy = self.micro_training_policy_service.build_from_current_attempt(
+                task=task,
+                workspace_path=workspace_path,
+                current_verification=verification_payload,
+                previous_verification=previous_verification_snapshot,
+            )
+            verification_payload["micro_training_policy"] = micro_training_policy
             if not quality_ok:
                 verification_payload["improvement_strategy"] = self.improvement_strategy_service.build_for_quality_failure(
                     run_id=run_id,
@@ -109,6 +119,7 @@ class RunVerificationStage:
                     previous_verification=previous_verification_snapshot,
                     quality_reason=quality_reason,
                     experiment_history=experiment_history,
+                    micro_training_policy=micro_training_policy,
                 )
 
         terminal_skip_reason = self.verification_flow_service.planning_only_terminal_skip_reason(verification_payload)

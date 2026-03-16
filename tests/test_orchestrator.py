@@ -1076,7 +1076,7 @@ async def test_stub_planner_quality_target_emits_shell_training_step():
     assert any(step.step_intent.value == "run_training" and step.action == "shell" for step in plan.steps)
     assert preflight_step.action == "codex"
     assert "preflight/debug loop" in (preflight_step.instruction or "")
-    assert (training_step.command or "") == "python run_task.py --metrics-path metrics.json"
+    assert (training_step.command or "") == "python run_task.py --epochs 1 --metrics-path metrics.json"
     assert any(step.step_intent.value == "verify_metrics" and step.action == "verify" for step in plan.steps)
 
 
@@ -1098,7 +1098,32 @@ async def test_stub_planner_routes_first_preflight_through_codex_by_default():
     assert preflight_step.action == "codex"
     assert "Codex-owned preflight/debug loop" in (preflight_step.instruction or "")
     assert training_step.action == "shell"
-    assert (training_step.command or "") == "python run_task.py --metrics-path metrics.json"
+    assert (training_step.command or "") == "python run_task.py --epochs 1 --metrics-path metrics.json"
+
+
+@pytest.mark.asyncio
+async def test_stub_planner_uses_micro_training_policy_epochs():
+    planner = StubPlanner()
+    payload = PlanInput(
+        goal="обучи сегментатор на датасете в workspace",
+        constraints=["RALPH_REQUIRED_METRIC: iou >= 95%"],
+        contexts=[],
+        workspace_id="ws",
+        micro_training_policy={
+            "next_epochs": 5,
+            "phase": "expand",
+            "force_strategy_reset": False,
+        },
+    )
+
+    plan = await planner.build_plan(payload)
+
+    training_step = next(step for step in plan.steps if step.id == "step-4")
+    codex_step = next(step for step in plan.steps if step.id == "step-2")
+
+    assert training_step.action == "shell"
+    assert (training_step.command or "") == "python run_task.py --epochs 5 --metrics-path metrics.json"
+    assert "run exactly 5 epoch(s)" in (codex_step.instruction or "")
 
 
 @pytest.mark.asyncio
