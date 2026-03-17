@@ -129,6 +129,7 @@ class RunExecutionStage:
                 return "continue"
 
             preflight_dependency_guard = self.execution_guard_service.preflight_dependency_block_reason(
+                run_id=run_id,
                 workspace_path=workspace_path,
                 step=step,
             )
@@ -212,6 +213,7 @@ class RunExecutionStage:
                 return "return"
 
             dependency_issue = self.execution_guard_service.structured_dependency_failure_reason(
+                run_id=run_id,
                 workspace_path=workspace_path,
                 step=step,
                 result=result,

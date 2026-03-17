@@ -22,6 +22,9 @@ class ShellCommandNormalizer:
         "metrics.md",
         "metrics.markdown",
     }
+    _RUN_SCOPED_METRICS_RE = re.compile(
+        r"^(?:\./)?\.openin/runs/[0-9a-fA-F-]{36}/(?P<name>(?:preflight_)?metrics\.json)$"
+    )
 
     def shell_primary_binary(self, command: str) -> str:
         try:
@@ -233,6 +236,59 @@ class ShellCommandNormalizer:
         )
         sanitized = self.rewrite_missing_relative_paths(sanitized, workspace_path)
         return sanitized
+
+    def rewrite_run_scoped_metrics_paths(self, command: str, *, run_id: str) -> str:
+        if not command or not str(run_id).strip():
+            return command
+        if any(op in command for op in ("&&", "||", ";", "|")):
+            return command
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return command
+        if not tokens:
+            return command
+
+        rewritten = False
+        idx = 0
+        while idx < len(tokens):
+            token = tokens[idx]
+            if token in self._OUTPUT_PATH_FLAGS and idx + 1 < len(tokens):
+                replacement = self._rewrite_metrics_output_token(tokens[idx + 1], run_id=run_id)
+                if replacement != tokens[idx + 1]:
+                    tokens[idx + 1] = replacement
+                    rewritten = True
+                idx += 2
+                continue
+            for flag in self._OUTPUT_PATH_FLAGS:
+                prefix = f"{flag}="
+                if token.startswith(prefix):
+                    original_value = token[len(prefix) :]
+                    replacement = self._rewrite_metrics_output_token(original_value, run_id=run_id)
+                    if replacement != original_value:
+                        tokens[idx] = f"{prefix}{replacement}"
+                        rewritten = True
+                    break
+            idx += 1
+        if not rewritten:
+            return command
+        return " ".join(shlex.quote(token) for token in tokens)
+
+    def _rewrite_metrics_output_token(self, token: str, *, run_id: str) -> str:
+        cleaned = str(token or "").strip()
+        if not cleaned:
+            return cleaned
+        normalized = cleaned.replace("\\", "/").strip()
+        basename = Path(normalized).name.lower()
+        if basename not in {"metrics.json", "preflight_metrics.json"}:
+            return cleaned
+        if basename == "preflight_metrics.json":
+            return f".openin/runs/{run_id}/preflight_metrics.json"
+        if normalized in {"metrics.json", "./metrics.json"}:
+            return f".openin/runs/{run_id}/metrics.json"
+        if self._RUN_SCOPED_METRICS_RE.match(normalized):
+            return f".openin/runs/{run_id}/metrics.json"
+        return cleaned
 
     def rewrite_missing_relative_paths(self, command: str, workspace_path: Path) -> str:
         if any(op in command for op in ("&&", "||", ";", "|")):

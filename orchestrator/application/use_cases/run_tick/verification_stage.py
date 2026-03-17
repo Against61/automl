@@ -104,6 +104,21 @@ class RunVerificationStage:
                 "status": "passed" if quality_ok else "failed",
                 "reason": quality_reason,
             }
+            if quality_ok:
+                materialization_issue = self.execution_guard_service.quality_gate_materialization_reason(
+                    run_id=run_id,
+                    task=task,
+                    workspace_path=workspace_path,
+                    verification_payload=verification_payload,
+                )
+                if materialization_issue:
+                    quality_ok = False
+                    quality_reason = materialization_issue
+                    quality_gate = (False, materialization_issue)
+                    verification_payload["quality_gate"] = {
+                        "status": "failed",
+                        "reason": materialization_issue,
+                    }
             micro_training_policy = self.micro_training_policy_service.build_from_current_attempt(
                 task=task,
                 workspace_path=workspace_path,

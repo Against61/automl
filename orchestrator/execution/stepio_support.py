@@ -13,6 +13,16 @@ from orchestrator.persistence.schemas import ArtifactKind, PlannerStep, StepArti
 
 
 class StepIOSupport:
+    _OUTPUT_PATH_FLAGS = {
+        "--metrics-path",
+        "--output",
+        "--output-path",
+        "--results-path",
+        "--report-path",
+        "--artifact-path",
+        "--preflight-metrics-path",
+    }
+
     def __init__(
         self,
         *,
@@ -115,6 +125,8 @@ class StepIOSupport:
             if not normalized:
                 continue
             expected_kind_by_path[normalized] = spec.kind
+        for rel in self.extract_output_artifact_paths(result.command, workspace_path):
+            expected_kind_by_path.setdefault(rel, ArtifactKind.metrics if "metric" in rel else ArtifactKind.file)
         candidate_paths: list[str] = []
         for rel in result.files_changed or []:
             normalized = self.normalize_expected_path(rel, workspace_path)
@@ -152,6 +164,37 @@ class StepIOSupport:
                 )
             )
         return produced
+
+    def extract_output_artifact_paths(self, command: str | None, workspace_path: Path) -> list[str]:
+        if not command:
+            return []
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return []
+        if not tokens:
+            return []
+        paths: list[str] = []
+        idx = 0
+        while idx < len(tokens):
+            token = tokens[idx]
+            value: str | None = None
+            if token in self._OUTPUT_PATH_FLAGS and idx + 1 < len(tokens):
+                value = tokens[idx + 1]
+                idx += 2
+            else:
+                for flag in self._OUTPUT_PATH_FLAGS:
+                    prefix = f"{flag}="
+                    if token.startswith(prefix):
+                        value = token[len(prefix) :]
+                        break
+                idx += 1
+            if not value:
+                continue
+            normalized = self.normalize_expected_path(value, workspace_path)
+            if normalized and normalized not in paths:
+                paths.append(normalized)
+        return paths
 
     def sha256_file(self, path: Path) -> str:
         digest = hashlib.sha256()

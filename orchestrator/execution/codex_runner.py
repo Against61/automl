@@ -180,7 +180,12 @@ class CodexRunner:
                 self._write_stepio_result(run_id, step, result, workspace_path, run_path)
                 return result
             normalized_commands = [
-                self._sanitize_shell_command(command, workspace_path) for command in commands
+                self._prepare_shell_command(
+                    run_id=run_id,
+                    command=command,
+                    workspace_path=workspace_path,
+                )
+                for command in commands
             ]
             result = await self._run_commands(run_id, step, normalized_commands, workspace_path, run_path)
             self._write_stepio_result(run_id, step, result, workspace_path, run_path)
@@ -442,7 +447,11 @@ class CodexRunner:
         stdin_payload: str | None,
         step: PlannerStep | None = None,
     ) -> StepExecutionResult:
-        command = self._sanitize_shell_command(command, workspace_path)
+        command = self._prepare_shell_command(
+            run_id=run_id,
+            command=command,
+            workspace_path=workspace_path,
+        )
         command = self._normalize_python_runtime_command(command, workspace_path)
         return await self._run_raw(
             run_id=run_id,
@@ -470,6 +479,13 @@ class CodexRunner:
 
     def _sanitize_shell_command(self, command: str, workspace_path: Path) -> str:
         return self.shell_command_normalizer.sanitize_shell_command(command, workspace_path)
+
+    def _prepare_shell_command(self, *, run_id: str, command: str, workspace_path: Path) -> str:
+        sanitized = self._sanitize_shell_command(command, workspace_path)
+        return self.shell_command_normalizer.rewrite_run_scoped_metrics_paths(
+            sanitized,
+            run_id=run_id,
+        )
 
     async def _run_raw(
         self,

@@ -272,12 +272,19 @@ class ExecutionGuardService:
     def preflight_dependency_block_reason(
         self,
         *,
+        run_id: str,
         workspace_path: Path,
         step: PlannerStep,
     ) -> str | None:
         if step.action != "shell" or step.step_intent != StepIntent.run_training:
             return None
-        reason = self._structured_dependency_issue_reason([workspace_path / "preflight_metrics.json"])
+        reason = self._structured_dependency_issue_reason(
+            self._run_scoped_metrics_candidate_paths(
+                workspace_path=workspace_path,
+                run_id=run_id,
+                primary_name="preflight_metrics.json",
+            )
+        )
         if not reason:
             return None
         return (
@@ -288,6 +295,7 @@ class ExecutionGuardService:
     def structured_dependency_failure_reason(
         self,
         *,
+        run_id: str,
         workspace_path: Path,
         step: PlannerStep,
         result: StepExecutionResult,
@@ -296,7 +304,11 @@ class ExecutionGuardService:
             return None
         if step.action != "shell" or step.step_intent != StepIntent.run_training:
             return None
-        candidate_paths: list[Path] = [workspace_path / "metrics.json", workspace_path / "preflight_metrics.json"]
+        candidate_paths = self._run_scoped_metrics_candidate_paths(
+            workspace_path=workspace_path,
+            run_id=run_id,
+            primary_name="metrics.json",
+        )
         for spec in step.expected_artifacts:
             if spec.kind != ArtifactKind.metrics or not spec.path:
                 continue
@@ -331,6 +343,56 @@ class ExecutionGuardService:
             )
         return None
 
+    def quality_gate_materialization_reason(
+        self,
+        *,
+        run_id: str,
+        task: dict[str, Any],
+        workspace_path: Path,
+        verification_payload: dict[str, Any],
+    ) -> str | None:
+        quality_gate = verification_payload.get("quality_gate")
+        if not isinstance(quality_gate, dict):
+            return None
+        if str(quality_gate.get("status") or "").strip().lower() != "passed":
+            return None
+        if str(quality_gate.get("reason") or "").strip().lower() != "quality gate passed":
+            return None
+
+        run_scoped_metrics = workspace_path / ".openin" / "runs" / str(run_id) / "metrics.json"
+        try:
+            if not run_scoped_metrics.is_file() or run_scoped_metrics.stat().st_size <= 0:
+                return (
+                    "quality gate passed without a current run-scoped metrics artifact "
+                    f"at `{run_scoped_metrics.relative_to(workspace_path)}`"
+                )
+        except OSError:
+            return (
+                "quality gate passed without a readable current run-scoped metrics artifact "
+                f"at `{run_scoped_metrics.relative_to(workspace_path)}`"
+            )
+
+        requirement = self.ralph_service.quality_gate_service.extract_requirement(
+            task=task,
+            workspace_path=workspace_path,
+        )
+        if not requirement:
+            return None
+        metric_key = str(requirement.get("metric_key") or "").strip()
+        metrics = verification_payload.get("metrics") if isinstance(verification_payload.get("metrics"), dict) else {}
+        metric_value = self.ralph_service.quality_gate_service.select_metric_value(metrics, metric_key)
+        if metric_value is None:
+            return (
+                f"quality gate passed without materializing target metric `{metric_key}` "
+                "in verification metrics"
+            )
+        metric_resolution = verification_payload.get("metric_resolution")
+        if not isinstance(metric_resolution, dict) or not str(metric_resolution.get("resolved_metric_key") or "").strip():
+            return (
+                f"quality gate passed without metric_resolution for target metric `{metric_key}`"
+            )
+        return None
+
     def _structured_dependency_issue_reason(self, candidate_paths: list[Path]) -> str | None:
         seen: set[Path] = set()
         for path in candidate_paths:
@@ -348,6 +410,21 @@ class ExecutionGuardService:
             if issue:
                 return f"{issue} (source: {resolved.name})"
         return None
+
+    @staticmethod
+    def _run_scoped_metrics_candidate_paths(
+        *,
+        workspace_path: Path,
+        run_id: str,
+        primary_name: str,
+    ) -> list[Path]:
+        paths: list[Path] = []
+        if str(run_id).strip():
+            paths.append(workspace_path / ".openin" / "runs" / str(run_id) / primary_name)
+        paths.append(workspace_path / primary_name)
+        if primary_name == "metrics.json":
+            paths.append(workspace_path / "preflight_metrics.json")
+        return paths
 
     @staticmethod
     def _read_json_mapping(path: Path) -> dict[str, Any] | None:

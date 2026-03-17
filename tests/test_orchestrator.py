@@ -407,6 +407,52 @@ def test_shell_command_keeps_preflight_metrics_output_path_literal(tmp_path: Pat
     assert normalized == "python run_task.py --preflight --metrics-path preflight_metrics.json"
 
 
+def test_shell_command_rewrites_training_metrics_output_path_to_current_run(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        llm_provider="stub",
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace" / "demo",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+    )
+    workspace = settings.workspace_root
+    runner = CodexRunner(settings)
+
+    rewritten = runner.shell_command_normalizer.rewrite_run_scoped_metrics_paths(
+        "python run_task.py --epochs 1 --metrics-path metrics.json",
+        run_id="7d8ebce5-12e4-4c1c-b8b7-bddaddbf70e7",
+    )
+
+    assert (
+        rewritten
+        == "python run_task.py --epochs 1 --metrics-path .openin/runs/7d8ebce5-12e4-4c1c-b8b7-bddaddbf70e7/metrics.json"
+    )
+    assert workspace == settings.workspace_root
+
+
+def test_shell_command_rewrites_preflight_metrics_output_path_to_current_run(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        llm_provider="stub",
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace" / "demo",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+    )
+    runner = CodexRunner(settings)
+
+    rewritten = runner.shell_command_normalizer.rewrite_run_scoped_metrics_paths(
+        "python run_task.py --preflight --metrics-path preflight_metrics.json",
+        run_id="7d8ebce5-12e4-4c1c-b8b7-bddaddbf70e7",
+    )
+
+    assert (
+        rewritten
+        == "python run_task.py --preflight --metrics-path .openin/runs/7d8ebce5-12e4-4c1c-b8b7-bddaddbf70e7/preflight_metrics.json"
+    )
+
+
 @pytest.mark.asyncio
 async def test_set_approved_preserves_waiting_plan_review_status(tmp_path: Path):
     settings = Settings(
@@ -1622,6 +1668,7 @@ async def test_preflight_dependency_block_reason_detects_missing_torch_metrics(t
     )
 
     reason = session._process_run_uc.execution_guard_service.preflight_dependency_block_reason(
+        run_id="run-current",
         workspace_path=workspace,
         step=step,
     )
@@ -1670,6 +1717,7 @@ async def test_structured_dependency_failure_reason_detects_missing_torch_from_m
     )
 
     reason = session._process_run_uc.execution_guard_service.structured_dependency_failure_reason(
+        run_id="run-current",
         workspace_path=workspace,
         step=step,
         result=result,
@@ -1678,6 +1726,31 @@ async def test_structured_dependency_failure_reason_detects_missing_torch_from_m
     assert reason is not None
     assert "dependency recovery required" in reason
     assert "metrics.json" in reason
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_materialization_reason_requires_run_scoped_metrics_and_resolution(tmp_path: Path):
+    session, db, _, _, settings = await create_session(tmp_path)
+    workspace = settings.workspace_root / "demo"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    reason = session._process_run_uc.execution_guard_service.quality_gate_materialization_reason(
+        run_id="7d8ebce5-12e4-4c1c-b8b7-bddaddbf70e7",
+        task={
+            "goal": "Train a simple MNIST baseline and report metrics",
+            "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 97%"]),
+            "payload_json": json.dumps({"payload": {"execution_mode": "plan_execute"}}),
+        },
+        workspace_path=workspace,
+        verification_payload={
+            "metrics": {},
+            "quality_gate": {"status": "passed", "reason": "quality gate passed"},
+        },
+    )
+
+    assert reason is not None
+    assert "run-scoped metrics artifact" in reason
     await db.close()
 
 
