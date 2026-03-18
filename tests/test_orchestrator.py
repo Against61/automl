@@ -2711,6 +2711,56 @@ def task_event(workspace_id: str = "ws-1", goal: str = "Implement change", prior
         },
     }
 
+
+@pytest.mark.asyncio
+async def test_submit_task_event_injects_requirement_provenance_constraints(tmp_path: Path):
+    session, db, _, _, _ = await create_session(tmp_path)
+    event = task_event(goal="Train model and report held-out metric")
+
+    run_id = await session.submit_task_event(event)
+
+    assert run_id is not None
+    task = await db.get_task(event["task_id"])
+    assert task is not None
+    constraints = json.loads(task["constraints_json"])
+    assert "keep tests green" in constraints
+    assert "SUPERVISION_SOURCE: explicit_dataset_annotations_only" in constraints
+    assert "ACCEPTANCE_METRIC_SOURCE: explicit_dataset_annotations_only" in constraints
+    assert "TARGET_INVENTION_ALLOWED: false" in constraints
+    assert "TASK_REFORMULATION_ALLOWED: false" in constraints
+    assert "PSEUDOLABELS_ALLOWED: false" in constraints
+    assert "ACCEPTANCE_SPLIT: heldout_or_disjoint_eval_only" in constraints
+    assert "SMOKE_ACCEPTANCE_ALLOWED: false" in constraints
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_submit_task_event_does_not_duplicate_requirement_provenance_prefixes(tmp_path: Path):
+    session, db, _, _, _ = await create_session(tmp_path)
+    event = task_event(goal="Train model and report held-out metric")
+    event["payload"]["constraints"] = [
+        "keep tests green",
+        "target_invention_allowed: true",
+        "SUPERVISION_SOURCE: custom_labels_only",
+        "SMOKE_ACCEPTANCE_ALLOWED: true",
+    ]
+
+    run_id = await session.submit_task_event(event)
+
+    assert run_id is not None
+    task = await db.get_task(event["task_id"])
+    assert task is not None
+    constraints = json.loads(task["constraints_json"])
+    assert constraints.count("target_invention_allowed: true") == 1
+    assert constraints.count("SUPERVISION_SOURCE: custom_labels_only") == 1
+    assert constraints.count("SMOKE_ACCEPTANCE_ALLOWED: true") == 1
+    assert "TARGET_INVENTION_ALLOWED: false" not in constraints
+    assert "SUPERVISION_SOURCE: explicit_dataset_annotations_only" not in constraints
+    assert "SMOKE_ACCEPTANCE_ALLOWED: false" not in constraints
+    assert "ACCEPTANCE_METRIC_SOURCE: explicit_dataset_annotations_only" in constraints
+    await db.close()
+
+
 @pytest.mark.asyncio
 async def test_task_event_deduplication(tmp_path: Path):
     session, db, _, _, _ = await create_session(tmp_path)

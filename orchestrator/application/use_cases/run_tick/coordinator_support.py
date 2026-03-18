@@ -25,6 +25,16 @@ from orchestrator.config import Settings
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_REQUIREMENT_CONSTRAINTS: tuple[tuple[str, str], ...] = (
+    ("SUPERVISION_SOURCE:", "SUPERVISION_SOURCE: explicit_dataset_annotations_only"),
+    ("ACCEPTANCE_METRIC_SOURCE:", "ACCEPTANCE_METRIC_SOURCE: explicit_dataset_annotations_only"),
+    ("TARGET_INVENTION_ALLOWED:", "TARGET_INVENTION_ALLOWED: false"),
+    ("TASK_REFORMULATION_ALLOWED:", "TASK_REFORMULATION_ALLOWED: false"),
+    ("PSEUDOLABELS_ALLOWED:", "PSEUDOLABELS_ALLOWED: false"),
+    ("ACCEPTANCE_SPLIT:", "ACCEPTANCE_SPLIT: heldout_or_disjoint_eval_only"),
+    ("SMOKE_ACCEPTANCE_ALLOWED:", "SMOKE_ACCEPTANCE_ALLOWED: false"),
+)
+
 
 class RunCoordinatorSupportService:
     def __init__(
@@ -90,13 +100,24 @@ class RunCoordinatorSupportService:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _with_default_requirement_constraints(self, event: TaskSubmittedEvent) -> TaskSubmittedEvent:
+        constraints = [str(item).strip() for item in event.payload.constraints if str(item).strip()]
+        existing_prefixes = {item.split(":", 1)[0].strip().upper() + ":" for item in constraints if ":" in item}
+        for prefix, value in _DEFAULT_REQUIREMENT_CONSTRAINTS:
+            if prefix.upper() in existing_prefixes:
+                continue
+            constraints.append(value)
+        event.payload.constraints = constraints
+        return event
+
     async def submit_task_event(self, payload: dict[str, Any]) -> str | None:
-        event = TaskSubmittedEvent.model_validate(payload)
+        event = self._with_default_requirement_constraints(TaskSubmittedEvent.model_validate(payload))
+        normalized_payload = event.model_dump(mode="json")
         inserted = await self.db.record_stream_event(
             event_id=str(event.event_id),
             stream=self.settings.stream_tasks,
             event_type=event.event_type,
-            payload_json=json.dumps(payload, ensure_ascii=True),
+            payload_json=json.dumps(normalized_payload, ensure_ascii=True),
         )
         if not inserted:
             logger.info("duplicate task event ignored: %s", event.event_id)
