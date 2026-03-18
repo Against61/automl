@@ -2767,6 +2767,8 @@ async def test_submit_task_event_injects_requirement_provenance_constraints(tmp_
     assert "PSEUDOLABELS_ALLOWED: false" in constraints
     assert "ACCEPTANCE_SPLIT: heldout_or_disjoint_eval_only" in constraints
     assert "SMOKE_ACCEPTANCE_ALLOWED: false" in constraints
+    assert "COMPUTE_DEVICE: mps" in constraints
+    assert "MAX_QUALITY_RETRIES: 10" in constraints
     await db.close()
 
 
@@ -2779,6 +2781,8 @@ async def test_submit_task_event_does_not_duplicate_requirement_provenance_prefi
         "target_invention_allowed: true",
         "SUPERVISION_SOURCE: custom_labels_only",
         "SMOKE_ACCEPTANCE_ALLOWED: true",
+        "compute_device: cpu",
+        "MAX_QUALITY_RETRIES: 3",
     ]
 
     run_id = await session.submit_task_event(event)
@@ -2790,9 +2794,13 @@ async def test_submit_task_event_does_not_duplicate_requirement_provenance_prefi
     assert constraints.count("target_invention_allowed: true") == 1
     assert constraints.count("SUPERVISION_SOURCE: custom_labels_only") == 1
     assert constraints.count("SMOKE_ACCEPTANCE_ALLOWED: true") == 1
+    assert constraints.count("compute_device: cpu") == 1
+    assert constraints.count("MAX_QUALITY_RETRIES: 3") == 1
     assert "TARGET_INVENTION_ALLOWED: false" not in constraints
     assert "SUPERVISION_SOURCE: explicit_dataset_annotations_only" not in constraints
     assert "SMOKE_ACCEPTANCE_ALLOWED: false" not in constraints
+    assert "COMPUTE_DEVICE: mps" not in constraints
+    assert "MAX_QUALITY_RETRIES: 10" not in constraints
     assert "ACCEPTANCE_METRIC_SOURCE: explicit_dataset_annotations_only" in constraints
     await db.close()
 
