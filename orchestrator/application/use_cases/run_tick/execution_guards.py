@@ -27,6 +27,16 @@ _MISSING_MODULE_RE = re.compile(r"No module named ['\"]([^'\"]+)['\"]")
 _RUN_SCOPED_METRICS_PATH_RE = re.compile(
     r"(?:^|[\s\"'=])(?P<path>(?:\./)?\.openin/runs/(?P<run_id>[0-9a-fA-F-]{36})/(?P<name>(?:preflight_)?metrics\.json))(?=$|[\s\"'])"
 )
+_SYNTHETIC_DATA_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\btorch\.randn\s*\(", re.IGNORECASE),
+    re.compile(r"\btorch\.rand\s*\(", re.IGNORECASE),
+    re.compile(r"\btorchvision\.datasets\.fakedata\b", re.IGNORECASE),
+    re.compile(r"\bnp\.random\.(?:rand|randn|random|uniform|normal)\s*\(", re.IGNORECASE),
+    re.compile(r"\b(?:_?build|make|create|generate)_(?:synthetic|fake|dummy)[a-z0-9_]*\s*\(", re.IGNORECASE),
+    re.compile(r"\b(?:synthetic_dataset|generated_samples|fake_data|dummy_data)\b", re.IGNORECASE),
+    re.compile(r"\btoy\s+(?:point|points|dataset|sample|samples|cloud)\b", re.IGNORECASE),
+    re.compile(r"\bby\s+construction\b", re.IGNORECASE),
+)
 
 
 class ExecutionGuardService:
@@ -253,15 +263,7 @@ class ExecutionGuardService:
             content = script_path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             return None
-        normalized = " ".join(content.lower().split())
-        synthetic_markers = (
-            "torch.randn(",
-            "_build_synthetic",
-            "synthetic",
-            "toy point",
-            "by construction",
-        )
-        if any(marker in normalized for marker in synthetic_markers):
+        if any(pattern.search(content) for pattern in _SYNTHETIC_DATA_PATTERNS):
             return (
                 f"{intent.task_family} smoke step uses synthetic data instead of a real dataset subset; "
                 "rewrite the script to train/evaluate on a small real subset from the workspace dataset "

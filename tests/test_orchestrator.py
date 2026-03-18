@@ -1642,6 +1642,42 @@ async def test_synthetic_real_dataset_smoke_guard_blocks_generated_samples_scrip
 
 
 @pytest.mark.asyncio
+async def test_synthetic_real_dataset_smoke_guard_allows_negative_no_synthetic_text(tmp_path: Path):
+    session, _, _, _, settings = await create_session(tmp_path)
+    workspace = settings.workspace_root / "demo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    script = workspace / "run_task.py"
+    script.write_text(
+        "\n".join(
+            [
+                "SMOKE_TEST_PLAN = {'exclusions': ['no synthetic data', 'no pseudo-labels']}",
+                "print('real dataset smoke only')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    step = PlannerStep(
+        id="train-seg",
+        title="run segmentation smoke",
+        action="shell",
+        step_intent="run_training",
+        command="python run_task.py",
+        risk_level="low",
+    )
+
+    reason = session._process_run_uc.execution_guard_service.synthetic_real_dataset_smoke_guard_reason(
+        task={
+            "goal": "Train segmentation model on coco-segmentation",
+            "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: iou >= 95%"]),
+        },
+        workspace_path=workspace,
+        step=step,
+    )
+
+    assert reason is None
+
+
+@pytest.mark.asyncio
 async def test_preflight_dependency_block_reason_detects_missing_torch_metrics(tmp_path: Path):
     session, db, _, _, settings = await create_session(tmp_path)
     workspace = settings.workspace_root / "demo"
