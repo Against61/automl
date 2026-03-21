@@ -1223,6 +1223,25 @@ async def test_stub_planner_uses_micro_training_policy_epochs():
 
 
 @pytest.mark.asyncio
+async def test_stub_planner_includes_structured_memory_and_baseline_research_context():
+    planner = StubPlanner()
+    payload = PlanInput(
+        goal="train classifier in workspace",
+        constraints=["RALPH_REQUIRED_METRIC: accuracy >= 92%"],
+        contexts=[],
+        workspace_id="ws",
+        experiment_memory_summary="- latest_attempt: attempt=3 quality=failed eval_accuracy=0.8850 intervention=targeted_finetune",
+        baseline_research_summary="- baseline_expectation: a competent CNN baseline should move quickly on FashionMNIST",
+    )
+
+    plan = await planner.build_plan(payload)
+    codex_step = next(step for step in plan.steps if step.id == "step-2")
+
+    assert "Structured experiment memory:" in (codex_step.instruction or "")
+    assert "Baseline/research context:" in (codex_step.instruction or "")
+
+
+@pytest.mark.asyncio
 async def test_stub_planner_ralph_preparatory_story_emits_analysis_plan():
     planner = StubPlanner()
     payload = PlanInput(
@@ -2487,9 +2506,9 @@ async def test_selected_skill_context_is_injected_into_codex_prompt(tmp_path: Pa
     settings.runs_root.mkdir(parents=True, exist_ok=True)
     run_path = settings.runs_root / "run-skill-context"
     run_path.mkdir(parents=True, exist_ok=True)
-    (workspace / "knowledge" / "skills" / "pytorch-lightning").mkdir(parents=True, exist_ok=True)
-    (workspace / "knowledge" / "skills" / "pytorch-lightning" / "SKILL.md").write_text(
-        "# Lightning\nPrefer deterministic trainer loops.\n",
+    (workspace / "knowledge" / "skills" / "seaborn").mkdir(parents=True, exist_ok=True)
+    (workspace / "knowledge" / "skills" / "seaborn" / "SKILL.md").write_text(
+        "# Seaborn\nPrefer explicit diagnostics and chart-ready metrics.\n",
         encoding="utf-8",
     )
 
@@ -2499,7 +2518,7 @@ async def test_selected_skill_context_is_injected_into_codex_prompt(tmp_path: Pa
         title="use skill context",
         action="codex",
         instruction="Refactor the trainer with stable experiment loops.",
-        skill_paths=["knowledge/skills/pytorch-lightning/SKILL.md"],
+        skill_paths=["knowledge/skills/seaborn/SKILL.md"],
         risk_level="low",
     )
     result = await runner.execute_step(
@@ -2511,7 +2530,7 @@ async def test_selected_skill_context_is_injected_into_codex_prompt(tmp_path: Pa
     assert result.status == "completed"
     prompt_text = (run_path / "skill-step.prompt.txt").read_text(encoding="utf-8")
     assert "Selected skill context (apply these instructions before coding):" in prompt_text
-    assert "Lightning" in prompt_text
+    assert "Seaborn" in prompt_text
     assert "skill-context:" in (result.command or "")
 
 

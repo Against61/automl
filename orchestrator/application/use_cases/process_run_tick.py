@@ -17,6 +17,7 @@ from orchestrator.application.use_cases.run_tick import (
     StepioRecoveryService,
     VerificationFlowService,
 )
+from orchestrator.application.services.baseline_research_service import BaselineResearchService
 from orchestrator.application.services.plan_contract_service import PlanContractService
 from orchestrator.application.services.metric_interpretation_service import CodexMetricInterpreter
 from orchestrator.application.services.quality_gate_service import QualityGateService
@@ -84,6 +85,7 @@ class ProcessRunTickUseCase:
         )
         improvement_strategy_service = ImprovementStrategyService(quality_gate_service=quality_gate_service)
         micro_training_policy_service = MicroTrainingPolicyService(quality_gate_service=quality_gate_service)
+        baseline_research_service = BaselineResearchService()
         workspace_snapshot_service = WorkspaceSnapshotService()
         ralph_service = RalphScenarioService(
             settings=settings,
@@ -122,6 +124,7 @@ class ProcessRunTickUseCase:
             planner=planner,
             policy_engine=policy_engine,
             ralph_service=ralph_service,
+            baseline_research_service=baseline_research_service,
             micro_training_policy_service=micro_training_policy_service,
             planning_context_service=self.planning_context_service,
             execution_guard_service=execution_guard_service,

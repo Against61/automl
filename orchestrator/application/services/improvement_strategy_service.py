@@ -12,6 +12,8 @@ from orchestrator.execution.verifier import VerificationResult
 
 
 class ImprovementStrategyService:
+    _EXCLUDED_SKILL_TOKENS = ("lightning",)
+
     def __init__(self, quality_gate_service: QualityGateService):
         self.quality_gate_service = quality_gate_service
 
@@ -151,6 +153,8 @@ class ImprovementStrategyService:
                 except ValueError:
                     rel = skill_md
                 entry = (source, name)
+                if self._is_excluded_skill(name=name, path=str(rel)):
+                    continue
                 if entry in seen:
                     continue
                 seen.add(entry)
@@ -212,7 +216,6 @@ class ImprovementStrategyService:
         pattern = str(diagnosis.get("pattern", "insufficient_signal"))
         skill_paths = [item["path"] for item in relevant_skills]
         skill_names = [item["name"] for item in relevant_skills]
-        has_lightning = any("lightning" in item["name"].lower() or "lightning" in item["path"].lower() for item in available_skills)
 
         interventions: list[dict[str, Any]] = []
         if pattern == "overfitting":
@@ -301,23 +304,6 @@ class ImprovementStrategyService:
                 "history_reference_count": len(experiment_history),
             }
         )
-        if has_lightning:
-            interventions.append(
-                {
-                    "id": "lightning_refactor_for_repeatability",
-                    "type": "framework",
-                    "description": "Use PyTorch Lightning style loops/checkpointing for deterministic experiment cycles.",
-                    "actions": [
-                        "move training loop to Lightning module/datamodule",
-                        "log metrics consistently each epoch",
-                        "persist best checkpoint by validation metric",
-                    ],
-                    "expected_gain": "more stable and reproducible iteration loop",
-                    "cost_level": "medium",
-                    "skill_paths": [item["path"] for item in relevant_skills if "lightning" in item["name"].lower() or "lightning" in item["path"].lower()],
-                    "skill_names": [item["name"] for item in relevant_skills if "lightning" in item["name"].lower() or "lightning" in item["path"].lower()],
-                }
-            )
 
         if latest_hyperparameters:
             interventions[0]["latest_hyperparameters"] = latest_hyperparameters
@@ -422,9 +408,9 @@ class ImprovementStrategyService:
         for item in available_skills:
             name = str(item.get("name") or "").lower()
             path = str(item.get("path") or "").lower()
+            if self._is_excluded_skill(name=name, path=path):
+                continue
             score = 0
-            if "lightning" in name or "lightning" in path:
-                score += 5 if pattern in {"underfitting_or_data_pipeline_limit", "near_target_plateau"} else 3
             if "seaborn" in name or "seaborn" in path:
                 score += 4 if pattern in {"overfitting", "insufficient_signal"} else 2
             if "scikit" in name or "sklearn" in name or "scikit" in path:
@@ -434,9 +420,9 @@ class ImprovementStrategyService:
             if "jupyter" in name or "notebook" in name or "jupyter" in path:
                 score += 2 if pattern == "insufficient_signal" else 1
             if any(token in goal_blob for token in ("fashionmnist", "mnist", "cnn", "pytorch", "train")):
-                if "lightning" in name or "kaggle" in name:
+                if "kaggle" in name or "scikit" in name or "sklearn" in name:
                     score += 1
-            if latest_hyperparameters and ("lightning" in name or "kaggle" in name):
+            if latest_hyperparameters and ("kaggle" in name or "scikit" in name or "sklearn" in name):
                 score += 1
             if score > 0:
                 ranked.append((score, item))
@@ -445,6 +431,10 @@ class ImprovementStrategyService:
         if selected:
             return selected
         return available_skills[:2]
+
+    def _is_excluded_skill(self, *, name: str, path: str) -> bool:
+        lowered = f"{name} {path}".lower()
+        return any(token in lowered for token in self._EXCLUDED_SKILL_TOKENS)
 
     def _collect_hyperparameter_attempts(self, previous_verification: dict[str, Any] | None) -> list[dict[str, Any]]:
         if not isinstance(previous_verification, dict):

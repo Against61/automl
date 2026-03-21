@@ -93,6 +93,8 @@ class RalphScenarioService:
         last_failed_step: dict[str, Any] | None,
         previous_verification: dict[str, Any] | None = None,
         experiment_history_summary: str | None = None,
+        experiment_memory_summary: str | None = None,
+        baseline_research_summary: str | None = None,
     ) -> PlannerPlan | None:
         if not self.is_ralph_task(task):
             return None
@@ -104,6 +106,8 @@ class RalphScenarioService:
             last_failed_step=last_failed_step,
             previous_verification=previous_verification,
             experiment_history_summary=experiment_history_summary,
+            experiment_memory_summary=experiment_memory_summary,
+            baseline_research_summary=baseline_research_summary,
         )
 
     def ralph_quality_requirement_missing_reason(self, task: dict[str, Any], workspace_path: Path) -> str | None:
@@ -174,6 +178,8 @@ class RalphScenarioService:
         last_failed_step: dict[str, Any] | None,
         previous_verification: dict[str, Any] | None = None,
         experiment_history_summary: str | None = None,
+        experiment_memory_summary: str | None = None,
+        baseline_research_summary: str | None = None,
     ) -> PlannerPlan:
         should_bootstrap_prd = not await self.has_completed_prd_bootstrap_step(run.run_id)
         if should_bootstrap_prd:
@@ -185,6 +191,8 @@ class RalphScenarioService:
                 last_failed_step=last_failed_step,
                 previous_verification=previous_verification,
                 experiment_history_summary=experiment_history_summary,
+                experiment_memory_summary=experiment_memory_summary,
+                baseline_research_summary=baseline_research_summary,
             )
         return await self.build_story_plan(
             task=task,
@@ -194,6 +202,8 @@ class RalphScenarioService:
             last_failed_step=last_failed_step,
             previous_verification=previous_verification,
             experiment_history_summary=experiment_history_summary,
+            experiment_memory_summary=experiment_memory_summary,
+            baseline_research_summary=baseline_research_summary,
         )
 
     async def handle_successful_step(self, step_id: str, workspace_path: Path) -> tuple[bool, str]:
@@ -278,6 +288,8 @@ class RalphScenarioService:
         last_failed_step: dict[str, Any] | None,
         previous_verification: dict[str, Any] | None = None,
         experiment_history_summary: str | None = None,
+        experiment_memory_summary: str | None = None,
+        baseline_research_summary: str | None = None,
     ) -> PlannerPlan:
         constraints = [str(item).strip() for item in json.loads(task["constraints_json"]) if str(item).strip()]
         primary_goal = self.extract_primary_user_goal(task, constraints=constraints)
@@ -300,6 +312,8 @@ class RalphScenarioService:
 
         previous_error = run.error_message or "none"
         experiment_history_block = experiment_history_summary or "none"
+        experiment_memory_block = experiment_memory_summary or "none"
+        baseline_research_block = baseline_research_summary or "none"
         failed_step_block = (
             json.dumps(last_failed_step, ensure_ascii=True, indent=2) if last_failed_step else "none"
         )
@@ -332,6 +346,8 @@ class RalphScenarioService:
             f"Constraints:\n{constraints_block}\n\n"
             f"Retrieved context:\n{context_block}\n\n"
             f"Experiment history:\n{experiment_history_block}\n\n"
+            f"Structured experiment memory:\n{experiment_memory_block}\n\n"
+            f"Baseline/research context:\n{baseline_research_block}\n\n"
             f"Previous execution error:\n{previous_error}\n\n"
             f"Last failed step snapshot:\n{failed_step_block}\n\n"
             f"Previous verification context:\n{verification_block}\n\n"
@@ -397,6 +413,8 @@ class RalphScenarioService:
         last_failed_step: dict[str, Any] | None,
         previous_verification: dict[str, Any] | None = None,
         experiment_history_summary: str | None = None,
+        experiment_memory_summary: str | None = None,
+        baseline_research_summary: str | None = None,
     ) -> PlannerPlan:
         prd = self.backlog.load_prd(workspace_path)
         story = self.backlog.pick_next_story(prd)
@@ -454,6 +472,8 @@ class RalphScenarioService:
         workspace_tree_snapshot = self._build_workspace_tree_snapshot(workspace_path)
         previous_error = run.error_message or "none"
         experiment_history_block = experiment_history_summary or "none"
+        experiment_memory_block = experiment_memory_summary or "none"
+        baseline_research_block = baseline_research_summary or "none"
         primary_goal_block = primary_goal or "not provided"
         verification_block = previous_verification or {}
         if isinstance(verification_block, dict) and verification_block:
@@ -477,6 +497,8 @@ class RalphScenarioService:
             f"Retrieved context:\n{context_block}\n\n"
             f"Workspace tree snapshot:\n{workspace_tree_snapshot}\n\n"
             f"Experiment history:\n{experiment_history_block}\n\n"
+            f"Structured experiment memory:\n{experiment_memory_block}\n\n"
+            f"Baseline/research context:\n{baseline_research_block}\n\n"
             f"Previous execution error:\n{previous_error}\n\n"
             f"Previous verification context:\n{verification_block}\n\n"
             "Rules:\n"
@@ -501,6 +523,8 @@ class RalphScenarioService:
             workspace_id=run.workspace_id,
             workspace_snapshot_summary=workspace_tree_snapshot,
             experiment_history_summary=experiment_history_summary,
+            experiment_memory_summary=experiment_memory_summary,
+            baseline_research_summary=baseline_research_summary,
             previous_error=run.error_message,
             last_failed_step=last_failed_step,
             previous_verification=previous_verification,

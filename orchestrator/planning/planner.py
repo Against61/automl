@@ -30,6 +30,8 @@ class PlanInput:
     workspace_id: str
     workspace_snapshot_summary: str | None = None
     experiment_history_summary: str | None = None
+    experiment_memory_summary: str | None = None
+    baseline_research_summary: str | None = None
     previous_error: str | None = None
     last_failed_step: dict[str, Any] | None = None
     previous_verification: dict[str, Any] | None = None
@@ -66,6 +68,8 @@ class CodexOnlyPlanner(Planner):
         context_block = "\n".join(context_lines) if context_lines else "- no retrieved context"
         workspace_snapshot_block = payload.workspace_snapshot_summary or "none"
         experiment_history_block = payload.experiment_history_summary or "none"
+        experiment_memory_block = payload.experiment_memory_summary or "none"
+        baseline_research_block = payload.baseline_research_summary or "none"
         error_block = payload.previous_error or "none"
         previous_verification_block = payload.previous_verification or {}
         if isinstance(previous_verification_block, dict) and previous_verification_block:
@@ -94,6 +98,16 @@ class CodexOnlyPlanner(Planner):
             label="experiment_history",
             focus_terms=["accuracy", "iou", "loss", "quality", "chosen", "hyperparameters"],
         ) or "none"
+        experiment_memory_block = _PROMPT_CONTENT.compact_text_for_prompt(
+            experiment_memory_block,
+            label="experiment_memory",
+            focus_terms=["best_attempt", "latest_attempt", "metric", "delta", "intervention", "plateau"],
+        ) or "none"
+        baseline_research_block = _PROMPT_CONTENT.compact_text_for_prompt(
+            baseline_research_block,
+            label="baseline_research",
+            focus_terms=["baseline", "expectation", "research", "focus", "metric", "dataset"],
+        ) or "none"
         error_block = _PROMPT_CONTENT.compact_text_for_prompt(
             error_block,
             label="previous_error",
@@ -108,6 +122,8 @@ class CodexOnlyPlanner(Planner):
             f"Retrieved context:\n{context_block}\n\n"
             f"Workspace snapshot:\n{workspace_snapshot_block}\n\n"
             f"Experiment history:\n{experiment_history_block}\n\n"
+            f"Structured experiment memory:\n{experiment_memory_block}\n\n"
+            f"Baseline/research context:\n{baseline_research_block}\n\n"
             f"Previous execution error:\n{error_block}\n\n"
             f"Previous verification:\n{previous_verification_block}\n\n"
             f"Last failed step snapshot:\n{failed_step_block}\n\n"
@@ -178,6 +194,16 @@ class StubPlanner(Planner):
             label="experiment_history",
             focus_terms=["accuracy", "iou", "loss", "quality", "chosen", "hyperparameters"],
         ) or "none"
+        experiment_memory_block = _PROMPT_CONTENT.compact_text_for_prompt(
+            payload.experiment_memory_summary,
+            label="experiment_memory",
+            focus_terms=["best_attempt", "latest_attempt", "metric", "delta", "intervention", "plateau"],
+        ) or "none"
+        baseline_research_block = _PROMPT_CONTENT.compact_text_for_prompt(
+            payload.baseline_research_summary,
+            label="baseline_research",
+            focus_terms=["baseline", "expectation", "research", "focus", "metric", "dataset"],
+        ) or "none"
         previous_error = _PROMPT_CONTENT.compact_text_for_prompt(
             payload.previous_error,
             label="previous_error",
@@ -242,6 +268,8 @@ class StubPlanner(Planner):
             f"Retrieved context:\n{context_block}\n\n"
             f"Workspace snapshot:\n{workspace_snapshot_block}\n\n"
             f"Experiment history:\n{experiment_history_block}\n\n"
+            f"Structured experiment memory:\n{experiment_memory_block}\n\n"
+            f"Baseline/research context:\n{baseline_research_block}\n\n"
             f"Micro-training policy:\n{micro_training_block}\n\n"
             f"Previous execution error:\n{previous_error}\n\n"
             f"Previous verification:\n{previous_verification_block}\n\n"

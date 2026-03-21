@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 from orchestrator.application.services.ralph_service import RalphScenarioService
+from orchestrator.application.services.baseline_research_service import BaselineResearchService
 from orchestrator.application.services.micro_training_policy_service import MicroTrainingPolicyService
 from orchestrator.application.services.workspace_snapshot_service import WorkspaceSnapshotService
 from orchestrator.application.use_cases.run_tick.execution_guards import ExecutionGuardService
@@ -28,6 +29,7 @@ class RunPlanningStage:
         planner: Planner,
         policy_engine: PolicyEngine,
         ralph_service: RalphScenarioService,
+        baseline_research_service: BaselineResearchService,
         micro_training_policy_service: MicroTrainingPolicyService,
         planning_context_service: PlanningContextService,
         execution_guard_service: ExecutionGuardService,
@@ -40,6 +42,7 @@ class RunPlanningStage:
         self.planner = planner
         self.policy_engine = policy_engine
         self.ralph_service = ralph_service
+        self.baseline_research_service = baseline_research_service
         self.micro_training_policy_service = micro_training_policy_service
         self.planning_context_service = planning_context_service
         self.execution_guard_service = execution_guard_service
@@ -64,6 +67,13 @@ class RunPlanningStage:
         experiment_history = await self.planning_context_service.list_experiment_history(run=run, task=task)
         experiment_history_summary = self.planning_context_service.format_experiment_history_summary(
             experiment_history
+        )
+        experiment_memory_summary = self.planning_context_service.build_experiment_memory_summary(experiment_history)
+        baseline_research_summary = self.baseline_research_service.build_summary(
+            task=task,
+            workspace_path=workspace_path,
+            experiment_history=experiment_history,
+            previous_verification=previous_verification,
         )
         micro_training_policy = self.micro_training_policy_service.build_from_previous_verification(
             task=task,
@@ -99,6 +109,8 @@ class RunPlanningStage:
             last_failed_step=last_failed_step,
             previous_verification=previous_verification,
             experiment_history_summary=experiment_history_summary,
+            experiment_memory_summary=experiment_memory_summary,
+            baseline_research_summary=baseline_research_summary,
         )
         if plan is None:
             plan_input = self.planning_context_service.build_plan_input(
@@ -108,6 +120,8 @@ class RunPlanningStage:
                 contexts=contexts,
                 workspace_snapshot_summary=workspace_snapshot_summary,
                 experiment_history_summary=experiment_history_summary,
+                experiment_memory_summary=experiment_memory_summary,
+                baseline_research_summary=baseline_research_summary,
                 last_failed_step=last_failed_step,
                 previous_verification=previous_verification,
                 micro_training_policy=micro_training_policy,

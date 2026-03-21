@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from orchestrator.application.services.plan_contract_service import PlanContractService
+from orchestrator.application.services.baseline_research_service import BaselineResearchService
 from orchestrator.application.services.improvement_strategy_service import ImprovementStrategyService
 from orchestrator.application.services.micro_training_policy_service import MicroTrainingPolicyService
 from orchestrator.application.services.metric_interpretation_service import MetricInterpretation
@@ -17,6 +18,7 @@ from orchestrator.application.services.recovery_service import MissingFileRecove
 from orchestrator.application.services.task_intent_service import TaskIntentService
 from orchestrator.application.services.workspace_snapshot_service import WorkspaceSnapshotService
 from orchestrator.application.use_cases.run_tick.hyperparameters import HyperparameterService
+from orchestrator.application.use_cases.run_tick.planning_context import PlanningContextService
 from orchestrator.application.use_cases.process_run_tick import ProcessRunTickUseCase
 from orchestrator.persistence.db import Database, normalize_verification_payload
 from orchestrator.execution.verifier import VerificationResult
@@ -1320,6 +1322,8 @@ def test_improvement_strategy_service_promotes_relevant_skills_and_experiment_hi
     (skills_root / "pytorch-lightning" / "SKILL.md").write_text("# Lightning\nUse Lightning loops.\n", encoding="utf-8")
     (skills_root / "seaborn").mkdir(parents=True, exist_ok=True)
     (skills_root / "seaborn" / "SKILL.md").write_text("# Seaborn\nUse Seaborn diagnostics.\n", encoding="utf-8")
+    (skills_root / "sklearn").mkdir(parents=True, exist_ok=True)
+    (skills_root / "sklearn" / "SKILL.md").write_text("# Sklearn\nUse sklearn reports.\n", encoding="utf-8")
     monkeypatch.delenv("CODEX_HOME", raising=False)
 
     task = {
@@ -1355,7 +1359,8 @@ def test_improvement_strategy_service_promotes_relevant_skills_and_experiment_hi
 
     chosen = strategy["chosen_intervention"]
     assert chosen["skill_paths"]
-    assert any("lightning" in path.lower() for path in chosen["skill_paths"])
+    assert all("lightning" not in path.lower() for path in chosen["skill_paths"])
+    assert any("seaborn" in path.lower() or "sklearn" in path.lower() for path in chosen["skill_paths"])
     assert strategy["history"]["experiment_attempts"][0]["run_id"] == "old-run-1"
     assert any("Apply these skills as execution context" in item for item in strategy["planner_directives"])
 
@@ -1609,3 +1614,77 @@ def test_improvement_strategy_service_rotates_intervention_when_micro_training_b
     assert strategy["chosen_intervention_id"] != "capacity_and_schedule_upgrade"
     assert "rotated away from capacity_and_schedule_upgrade" in strategy["selection_reason"]
     assert any("1 epoch" in item for item in strategy["planner_directives"])
+
+
+def test_planning_context_service_builds_structured_experiment_memory_summary():
+    summary = PlanningContextService.build_experiment_memory_summary(
+        [
+            {
+                "attempt": 1,
+                "quality_status": "failed",
+                "metrics": {"eval_accuracy": 0.82},
+                "hyperparameters": {"epochs": 1, "learning_rate": 0.001},
+                "strategy": {"chosen_intervention_id": "capacity_and_schedule_upgrade"},
+            },
+            {
+                "attempt": 2,
+                "quality_status": "failed",
+                "metrics": {"eval_accuracy": 0.85},
+                "hyperparameters": {"epochs": 2, "learning_rate": 0.001},
+                "strategy": {"chosen_intervention_id": "capacity_and_schedule_upgrade"},
+            },
+            {
+                "attempt": 3,
+                "quality_status": "failed",
+                "metrics": {"eval_accuracy": 0.851},
+                "hyperparameters": {"epochs": 2, "learning_rate": 0.0005},
+                "strategy": {"chosen_intervention_id": "targeted_finetune"},
+            },
+        ]
+    )
+
+    assert "attempts_analyzed: 3" in summary
+    assert "latest_attempt:" in summary
+    assert "best_attempt:" in summary
+    assert "recent_metric_deltas:" in summary
+    assert "repeated_interventions:" in summary
+
+
+def test_planning_context_service_filters_lightning_skill_paths():
+    verification = {
+        "improvement_strategy": {
+            "chosen_intervention": {
+                "skill_paths": [
+                    "skills/pytorch-lightning/SKILL.md",
+                    "skills/seaborn/SKILL.md",
+                ]
+            }
+        }
+    }
+
+    selected = PlanningContextService.selected_skill_paths_from_verification(verification)
+
+    assert selected == ["skills/seaborn/SKILL.md"]
+
+
+def test_baseline_research_service_builds_dataset_brief(tmp_path: Path):
+    service = BaselineResearchService()
+    task = {
+        "goal": "Train a FashionMNIST classifier and report accuracy",
+        "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 92%"]),
+    }
+
+    summary = service.build_summary(
+        task=task,
+        workspace_path=tmp_path,
+        experiment_history=[
+            {"attempt": 1, "metrics": {"eval_accuracy": 0.881}},
+            {"attempt": 2, "metrics": {"eval_accuracy": 0.884}},
+            {"attempt": 3, "metrics": {"eval_accuracy": 0.885}},
+        ],
+        previous_verification={"metrics": {"eval_accuracy": 0.885}},
+    )
+
+    assert "dataset_hint: fashionmnist" in summary.lower()
+    assert "baseline_expectation:" in summary
+    assert "next_research_focus:" in summary

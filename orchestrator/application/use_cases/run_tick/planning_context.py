@@ -10,6 +10,25 @@ from orchestrator.planning.planner import PlanInput
 
 
 class PlanningContextService:
+    _EXCLUDED_SKILL_TOKENS = ("lightning",)
+    _METRIC_PREFERENCE: tuple[tuple[str, bool], ...] = (
+        ("eval_accuracy", True),
+        ("test_accuracy", True),
+        ("accuracy", True),
+        ("val_accuracy", True),
+        ("out_evaluation_accuracy", True),
+        ("iou", True),
+        ("mean_iou", True),
+        ("dice", True),
+        ("map50_95", True),
+        ("map50", True),
+        ("f1", True),
+        ("roc_auc", True),
+        ("eval_loss", False),
+        ("val_loss", False),
+        ("loss", False),
+    )
+
     def __init__(self, db: Database, experiment_history_context_limit: int) -> None:
         self.db = db
         self.experiment_history_context_limit = experiment_history_context_limit
@@ -23,6 +42,8 @@ class PlanningContextService:
         contexts: list[RetrievedContext],
         workspace_snapshot_summary: str | None,
         experiment_history_summary: str | None,
+        experiment_memory_summary: str | None,
+        baseline_research_summary: str | None,
         last_failed_step: dict[str, Any] | None,
         previous_verification: dict[str, Any] | None = None,
         micro_training_policy: dict[str, Any] | None = None,
@@ -34,6 +55,8 @@ class PlanningContextService:
             workspace_id=workspace_id,
             workspace_snapshot_summary=workspace_snapshot_summary,
             experiment_history_summary=experiment_history_summary,
+            experiment_memory_summary=experiment_memory_summary,
+            baseline_research_summary=baseline_research_summary,
             previous_error=run.error_message,
             last_failed_step=last_failed_step,
             previous_verification=previous_verification,
@@ -140,6 +163,37 @@ class PlanningContextService:
         return "\n".join(lines) if lines else "none"
 
     @staticmethod
+    def build_experiment_memory_summary(attempts: list[dict[str, Any]]) -> str:
+        valid_attempts = [item for item in attempts if isinstance(item, dict)]
+        if not valid_attempts:
+            return "none"
+
+        recent = valid_attempts[-8:]
+        latest = recent[-1]
+        best = PlanningContextService._best_attempt(recent)
+        delta_lines = PlanningContextService._recent_metric_deltas(recent)
+        intervention_summary = PlanningContextService._repeated_interventions(recent)
+        hp_summary = PlanningContextService._recent_hyperparameter_moves(recent)
+
+        lines = [f"- attempts_analyzed: {len(recent)}"]
+        latest_line = PlanningContextService._attempt_memory_line("latest_attempt", latest)
+        if latest_line:
+            lines.append(latest_line)
+        best_line = PlanningContextService._attempt_memory_line("best_attempt", best)
+        if best_line:
+            lines.append(best_line)
+        if delta_lines:
+            lines.append(f"- recent_metric_deltas: {'; '.join(delta_lines)}")
+        if intervention_summary:
+            lines.append(f"- repeated_interventions: {intervention_summary}")
+        if hp_summary:
+            lines.append(f"- recent_hyperparameter_moves: {hp_summary}")
+        heuristic = PlanningContextService._heuristic_readout(recent)
+        if heuristic:
+            lines.append(f"- heuristic_readout: {heuristic}")
+        return "\n".join(lines)
+
+    @staticmethod
     def selected_skill_paths_from_verification(verification: dict[str, Any] | None) -> list[str]:
         if not isinstance(verification, dict):
             return []
@@ -155,7 +209,7 @@ class PlanningContextService:
         skill_paths: list[str] = []
         for item in values:
             value = str(item).strip()
-            if value and value not in skill_paths:
+            if value and not PlanningContextService._is_excluded_skill_path(value) and value not in skill_paths:
                 skill_paths.append(value)
         return skill_paths[:3]
 
@@ -193,12 +247,20 @@ class PlanningContextService:
                 if isinstance(chosen, dict):
                     values = chosen.get("skill_paths")
                     if isinstance(values, list):
-                        paths = [str(value).strip() for value in values if str(value).strip()]
+                        paths = [
+                            str(value).strip()
+                            for value in values
+                            if str(value).strip() and not PlanningContextService._is_excluded_skill_path(str(value))
+                        ]
                         if paths:
                             return paths[:3]
             values = item.get("skill_paths")
             if isinstance(values, list):
-                paths = [str(value).strip() for value in values if str(value).strip()]
+                paths = [
+                    str(value).strip()
+                    for value in values
+                    if str(value).strip() and not PlanningContextService._is_excluded_skill_path(str(value))
+                ]
                 if paths:
                     return paths[:3]
         return []
@@ -231,7 +293,11 @@ class PlanningContextService:
                 "description": chosen.get("description"),
                 "actions": list(chosen.get("actions") or [])[:5] if isinstance(chosen.get("actions"), list) else [],
                 "skill_paths": (
-                    list(chosen.get("skill_paths") or [])[:4]
+                    [
+                        str(item).strip()
+                        for item in list(chosen.get("skill_paths") or [])[:4]
+                        if str(item).strip() and not PlanningContextService._is_excluded_skill_path(str(item))
+                    ]
                     if isinstance(chosen.get("skill_paths"), list)
                     else []
                 ),
@@ -261,6 +327,150 @@ class PlanningContextService:
                 )
             )
         return validated
+
+    @classmethod
+    def _is_excluded_skill_path(cls, value: str) -> bool:
+        lowered = value.strip().lower()
+        return any(token in lowered for token in cls._EXCLUDED_SKILL_TOKENS)
+
+    @classmethod
+    def _best_attempt(cls, attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
+        best_item: dict[str, Any] | None = None
+        best_score: float | None = None
+        for item in attempts:
+            metric = cls._extract_metric_signal(item)
+            if metric is None:
+                continue
+            _key, value, higher_is_better = metric
+            score = value if higher_is_better else -value
+            if best_score is None or score > best_score:
+                best_score = score
+                best_item = item
+        return best_item
+
+    @classmethod
+    def _attempt_memory_line(cls, label: str, item: dict[str, Any] | None) -> str | None:
+        if not isinstance(item, dict):
+            return None
+        metric = cls._extract_metric_signal(item)
+        metric_block = "metric=n/a"
+        if metric is not None:
+            metric_key, value, _higher_is_better = metric
+            metric_block = f"{metric_key}={value:.4f}"
+        chosen = cls._extract_intervention_id(item)
+        return (
+            f"- {label}: attempt={item.get('attempt', 'n/a')} "
+            f"quality={item.get('quality_status') or 'n/a'} "
+            f"{metric_block} intervention={chosen or 'n/a'}"
+        )
+
+    @classmethod
+    def _recent_metric_deltas(cls, attempts: list[dict[str, Any]]) -> list[str]:
+        deltas: list[str] = []
+        previous_metric: tuple[str, float, bool] | None = None
+        previous_attempt = None
+        for item in attempts[-4:]:
+            metric = cls._extract_metric_signal(item)
+            if metric is None:
+                continue
+            metric_key, value, _higher_is_better = metric
+            attempt_number = item.get("attempt")
+            if previous_metric is not None and previous_metric[0] == metric_key:
+                delta = value - previous_metric[1]
+                deltas.append(f"{previous_attempt}->{attempt_number} {metric_key} {delta:+.4f}")
+            previous_metric = metric
+            previous_attempt = attempt_number
+        return deltas[:3]
+
+    @classmethod
+    def _repeated_interventions(cls, attempts: list[dict[str, Any]]) -> str | None:
+        counts: dict[str, int] = {}
+        for item in attempts:
+            intervention = cls._extract_intervention_id(item)
+            if not intervention:
+                continue
+            counts[intervention] = counts.get(intervention, 0) + 1
+        repeated = [
+            f"{key} x{value}"
+            for key, value in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+            if value > 1
+        ]
+        return ", ".join(repeated[:3]) or None
+
+    @classmethod
+    def _recent_hyperparameter_moves(cls, attempts: list[dict[str, Any]]) -> str | None:
+        latest_values: dict[str, Any] = {}
+        for item in attempts[-3:]:
+            hyperparameters = item.get("hyperparameters")
+            if not isinstance(hyperparameters, dict):
+                continue
+            for key, value in list(hyperparameters.items())[:4]:
+                latest_values[str(key)] = value
+        if not latest_values:
+            return None
+        pairs = [f"{key}={value}" for key, value in list(latest_values.items())[:5]]
+        return ", ".join(pairs)
+
+    @classmethod
+    def _heuristic_readout(cls, attempts: list[dict[str, Any]]) -> str | None:
+        comparable: list[tuple[str, float]] = []
+        for item in attempts[-4:]:
+            metric = cls._extract_metric_signal(item)
+            if metric is None:
+                continue
+            metric_key, value, _higher_is_better = metric
+            comparable.append((metric_key, value))
+        if len(comparable) < 3:
+            return None
+        latest_key = comparable[-1][0]
+        same_metric_values = [value for key, value in comparable if key == latest_key]
+        if len(same_metric_values) >= 3 and max(same_metric_values) - min(same_metric_values) <= 0.01:
+            return "recent comparable attempts are near-flat; prefer a strategy change over repeating the same recipe"
+        if comparable[-1][1] > comparable[0][1]:
+            return "current recipe is still moving in the right direction; expanding budget is justified before broad search"
+        return None
+
+    @classmethod
+    def _extract_metric_signal(cls, item: dict[str, Any]) -> tuple[str, float, bool] | None:
+        metrics = item.get("metrics")
+        if not isinstance(metrics, dict):
+            return None
+        for key, higher_is_better in cls._METRIC_PREFERENCE:
+            value = cls._to_float(metrics.get(key))
+            if value is not None:
+                return key, value, higher_is_better
+        for key, value in metrics.items():
+            parsed = cls._to_float(value)
+            if parsed is not None:
+                return str(key), parsed, True
+        return None
+
+    @staticmethod
+    def _extract_intervention_id(item: dict[str, Any]) -> str | None:
+        strategy = item.get("strategy")
+        if not isinstance(strategy, dict):
+            return None
+        chosen = strategy.get("chosen_intervention")
+        if isinstance(chosen, dict):
+            value = str(chosen.get("id") or "").strip()
+            if value:
+                return value
+        value = str(strategy.get("chosen_intervention_id") or "").strip()
+        return value or None
+
+    @staticmethod
+    def _to_float(value: Any) -> float | None:
+        if isinstance(value, bool):
+            return float(int(value))
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            cleaned = value.strip().replace(",", ".")
+            try:
+                return float(cleaned)
+            except ValueError:
+                return None
+        return None
 
     @staticmethod
     def build_task_goal_signature(payload_dict: dict[str, Any]) -> str:
