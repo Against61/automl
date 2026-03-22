@@ -40,10 +40,12 @@ class Settings(BaseSettings):
     openai_embedding_model: str = "text-embedding-3-small"
     openai_api_key: str | None = None
     codex_model: str = "gpt-5.3-codex-spark"
+    research_use_arxiv: bool = True
+    research_use_hf_papers: bool = True
     research_backend_url: str = ""
     research_backend_api_key: str | None = None
-    research_backend_timeout_sec: float = Field(default=8.0, ge=1.0, le=60.0)
-    research_backend_max_hits: int = Field(default=3, ge=1, le=10)
+    research_http_timeout_sec: float = Field(default=8.0, ge=1.0, le=60.0)
+    research_max_hits: int = Field(default=3, ge=1, le=10)
 
     codex_cli_cmd: str = "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check"
     codex_use_openai_api_key: bool = True

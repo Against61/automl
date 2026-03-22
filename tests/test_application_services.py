@@ -1680,7 +1680,8 @@ async def test_baseline_research_service_builds_dataset_brief(tmp_path: Path):
         pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
         runs_root=tmp_path / "workspace" / "runs",
         llm_provider="stub",
-        research_backend_url="",
+        research_use_arxiv=False,
+        research_use_hf_papers=False,
     )
     service = BaselineResearchService(db, settings)
     task = {
@@ -1723,7 +1724,7 @@ async def test_baseline_research_service_builds_dataset_brief(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_baseline_research_service_prefers_web_backend_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+async def test_baseline_research_service_prefers_direct_web_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db = Database(tmp_path / "orchestrator.db")
     await db.connect()
     settings = Settings(
@@ -1733,21 +1734,35 @@ async def test_baseline_research_service_prefers_web_backend_hits(tmp_path: Path
         pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
         runs_root=tmp_path / "workspace" / "runs",
         llm_provider="stub",
-        research_backend_url="https://research.local/search",
+        research_use_arxiv=True,
+        research_use_hf_papers=True,
     )
     service = BaselineResearchService(db, settings)
 
-    async def fake_lookup(*, queries: list[str]) -> list[BaselineResearchService.WebResearchHit]:
+    async def fake_arxiv(*, queries: list[str]) -> list[BaselineResearchService.WebResearchHit]:
         assert queries
         return [
             BaselineResearchService.WebResearchHit(
                 title="FashionMNIST baseline note",
                 url="https://example.com/fashionmnist",
                 snippet="Use held-out validation and compare optimizer schedule before widening architecture.",
+                source="arxiv_api",
             )
         ]
 
-    monkeypatch.setattr(service, "_lookup_web_hits", fake_lookup)
+    async def fake_hf(*, queries: list[str]) -> list[BaselineResearchService.WebResearchHit]:
+        assert queries
+        return [
+            BaselineResearchService.WebResearchHit(
+                title="Trending note",
+                url="https://huggingface.co/papers/1234.56789",
+                snippet="Regularization changes often help before longer runs.",
+                source="huggingface_papers",
+            )
+        ]
+
+    monkeypatch.setattr(service, "_lookup_arxiv_hits", fake_arxiv)
+    monkeypatch.setattr(service, "_lookup_hf_papers_hits", fake_hf)
 
     summary = await service.build_summary(
         task={
@@ -1760,5 +1775,6 @@ async def test_baseline_research_service_prefers_web_backend_hits(tmp_path: Path
         previous_verification={"metrics": {"eval_accuracy": 0.88}},
     )
 
-    assert "lookup_mode: web_backend" in summary
+    assert "lookup_mode: direct_web" in summary
+    assert "research_sources: arxiv_api, huggingface_papers" in summary
     assert "research_hit_1:" in summary

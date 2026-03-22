@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,6 +25,7 @@ class BaselineResearchService:
         title: str
         url: str
         snippet: str
+        source: str = "web"
 
     _DATASET_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("fashionmnist", ("fashionmnist", "fashion-mnist", "fashion mnist")),
@@ -153,9 +156,12 @@ class BaselineResearchService:
             lines.append(f"- recent_pattern: {plateau_state}")
 
         if web_hits:
-            lines.append("- lookup_mode: web_backend")
+            lines.append("- lookup_mode: direct_web")
+            source_preview = ", ".join(sorted({hit.source for hit in web_hits}))
+            if source_preview:
+                lines.append(f"- research_sources: {source_preview}")
             lines.append(f"- research_queries: {' | '.join(queries[:2])}")
-            for index, hit in enumerate(web_hits[: self.settings.research_backend_max_hits], start=1):
+            for index, hit in enumerate(web_hits[: self.settings.research_max_hits], start=1):
                 lines.append(
                     f"- research_hit_{index}: {hit.title} | {hit.url} -> {self._snippet(hit.snippet)}"
                 )
@@ -307,15 +313,140 @@ class BaselineResearchService:
         return hits
 
     async def _lookup_web_hits(self, *, queries: list[str]) -> list[WebResearchHit]:
-        backend_url = self.settings.research_backend_url.strip()
-        if not backend_url:
+        hits: list[BaselineResearchService.WebResearchHit] = []
+        if self.settings.research_use_arxiv:
+            hits.extend(await self._lookup_arxiv_hits(queries=queries))
+        if self.settings.research_use_hf_papers and len(hits) < self.settings.research_max_hits:
+            hits.extend(await self._lookup_hf_papers_hits(queries=queries))
+        if not hits and self.settings.research_backend_url.strip():
+            payload = {
+                "queries": queries,
+                "max_hits": int(self.settings.research_max_hits),
+            }
+            raw = await self._fetch_web_backend(backend_url=self.settings.research_backend_url.strip(), payload=payload)
+            hits.extend(self._parse_web_backend_response(raw))
+        deduped: list[BaselineResearchService.WebResearchHit] = []
+        seen: set[tuple[str, str]] = set()
+        for hit in hits:
+            key = (hit.title.strip().lower(), hit.url.strip().lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(hit)
+            if len(deduped) >= self.settings.research_max_hits:
+                break
+        return deduped
+
+    async def _lookup_arxiv_hits(self, *, queries: list[str]) -> list[WebResearchHit]:
+        if not queries:
             return []
-        payload = {
-            "queries": queries,
-            "max_hits": int(self.settings.research_backend_max_hits),
-        }
-        raw = await self._fetch_web_backend(backend_url=backend_url, payload=payload)
-        return self._parse_web_backend_response(raw)
+        feed = await self._fetch_arxiv_feed(query=queries[0], max_results=int(self.settings.research_max_hits))
+        return self._parse_arxiv_feed(feed)
+
+    async def _fetch_arxiv_feed(self, *, query: str, max_results: int) -> str | None:
+        search_query = self._arxiv_search_query(query)
+        params = urllib.parse.urlencode(
+            {
+                "search_query": search_query,
+                "start": 0,
+                "max_results": max(1, min(int(max_results), int(self.settings.research_max_hits))),
+                "sortBy": "relevance",
+                "sortOrder": "descending",
+            }
+        )
+        url = f"https://export.arxiv.org/api/query?{params}"
+
+        def _request() -> str:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "codex-orchestrator-research/1.0 (+arxiv direct adapter)"},
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=float(self.settings.research_http_timeout_sec)) as response:
+                return response.read().decode("utf-8", errors="ignore")
+
+        try:
+            import asyncio
+
+            return await asyncio.to_thread(_request)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+            return None
+
+    def _parse_arxiv_feed(self, payload: str | None) -> list[WebResearchHit]:
+        if not payload:
+            return []
+        try:
+            root = ET.fromstring(payload)
+        except ET.ParseError:
+            return []
+        namespace = {"atom": "http://www.w3.org/2005/Atom"}
+        hits: list[BaselineResearchService.WebResearchHit] = []
+        for entry in root.findall("atom:entry", namespace):
+            title = (entry.findtext("atom:title", default="", namespaces=namespace) or "").strip()
+            snippet = (entry.findtext("atom:summary", default="", namespaces=namespace) or "").strip()
+            url = (entry.findtext("atom:id", default="", namespaces=namespace) or "").strip()
+            if not (title or snippet):
+                continue
+            hits.append(self.WebResearchHit(title=title or "untitled", url=url or "n/a", snippet=snippet, source="arxiv_api"))
+        return hits[: int(self.settings.research_max_hits)]
+
+    async def _lookup_hf_papers_hits(self, *, queries: list[str]) -> list[WebResearchHit]:
+        payload = await self._fetch_hf_daily_papers(limit=max(10, int(self.settings.research_max_hits) * 5))
+        return self._parse_hf_daily_papers(payload=payload, queries=queries)
+
+    async def _fetch_hf_daily_papers(self, *, limit: int) -> Any:
+        params = urllib.parse.urlencode({"sort": "trending", "limit": max(1, min(int(limit), 50))})
+        url = f"https://huggingface.co/api/daily_papers?{params}"
+
+        def _request() -> Any:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "codex-orchestrator-research/1.0 (+huggingface papers adapter)"},
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=float(self.settings.research_http_timeout_sec)) as response:
+                raw = response.read().decode("utf-8", errors="ignore")
+            return json.loads(raw)
+
+        try:
+            import asyncio
+
+            return await asyncio.to_thread(_request)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+            return None
+
+    def _parse_hf_daily_papers(self, *, payload: Any, queries: list[str]) -> list[WebResearchHit]:
+        if not isinstance(payload, list):
+            return []
+        query_terms = self._query_terms(queries)
+        scored: list[tuple[int, BaselineResearchService.WebResearchHit]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            paper = item.get("paper") if isinstance(item.get("paper"), dict) else {}
+            title = str(item.get("title") or paper.get("title") or "").strip()
+            snippet = str(item.get("summary") or paper.get("summary") or item.get("excerpt") or "").strip()
+            slug = str(item.get("slug") or paper.get("id") or item.get("id") or "").strip()
+            if not title and not snippet:
+                continue
+            url = f"https://huggingface.co/papers/{slug}" if slug else "https://huggingface.co/papers/trending"
+            haystack = f"{title} {snippet}".lower()
+            score = sum(1 for term in query_terms if term in haystack)
+            if score <= 0:
+                continue
+            scored.append(
+                (
+                    score,
+                    self.WebResearchHit(
+                        title=title or "untitled",
+                        url=url,
+                        snippet=snippet,
+                        source="huggingface_papers",
+                    ),
+                )
+            )
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [hit for _score, hit in scored[: int(self.settings.research_max_hits)]]
 
     async def _fetch_web_backend(self, *, backend_url: str, payload: dict[str, Any]) -> Any:
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
@@ -328,7 +459,7 @@ class BaselineResearchService:
 
         def _request() -> Any:
             request = urllib.request.Request(backend_url, data=body, headers=headers, method="POST")
-            timeout = float(self.settings.research_backend_timeout_sec)
+            timeout = float(self.settings.research_http_timeout_sec)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw = response.read().decode("utf-8", errors="ignore")
             return json.loads(raw)
@@ -362,8 +493,15 @@ class BaselineResearchService:
             snippet = str(item.get("snippet") or item.get("summary") or item.get("text") or "").strip()
             if not (title or snippet):
                 continue
-            hits.append(self.WebResearchHit(title=title or "untitled", url=url or "n/a", snippet=snippet))
-        return hits[: int(self.settings.research_backend_max_hits)]
+            hits.append(
+                self.WebResearchHit(
+                    title=title or "untitled",
+                    url=url or "n/a",
+                    snippet=snippet,
+                    source="custom_backend",
+                )
+            )
+        return hits[: int(self.settings.research_max_hits)]
 
     def _research_focus_from_hits(self, hits: list[PdfChunkRow]) -> list[str]:
         lines: list[str] = []
@@ -390,6 +528,26 @@ class BaselineResearchService:
         if not lines:
             lines.append("- next_research_focus: translate the retrieved web guidance into a concrete config or recipe diff before coding")
         return lines[:2]
+
+    @staticmethod
+    def _arxiv_search_query(query: str) -> str:
+        terms = [term for term in re.split(r"\s+", query.strip().lower()) if len(term) > 1][:6]
+        if not terms:
+            return 'all:"machine learning baseline"'
+        return "+AND+".join(f'all:"{term}"' for term in terms)
+
+    @staticmethod
+    def _query_terms(queries: list[str]) -> list[str]:
+        stop_words = {"baseline", "validation", "optimizer", "schedule", "task", "metric"}
+        terms: list[str] = []
+        for query in queries[:2]:
+            for raw in re.split(r"[^a-zA-Z0-9]+", query.lower()):
+                token = raw.strip()
+                if len(token) < 3 or token in stop_words:
+                    continue
+                if token not in terms:
+                    terms.append(token)
+        return terms[:8]
 
     def _plateau_state(self, attempts: list[dict[str, Any]], preferred_metric: str | None) -> str | None:
         comparable: list[float] = []
