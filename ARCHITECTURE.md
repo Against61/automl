@@ -49,6 +49,7 @@ Application services used by stages:
 - `orchestrator/application/services/recovery_service.py`
 - `orchestrator/application/services/quality_gate_service.py`
 - `orchestrator/application/services/improvement_strategy_service.py`
+- `orchestrator/application/services/baseline_research_service.py`
 - `orchestrator/application/services/ralph_service.py`
 - `orchestrator/application/services/workspace_snapshot_service.py`
 
@@ -97,7 +98,98 @@ Application services used by stages:
   - `orchestrator/persistence/schema_manager.py`
   - `orchestrator/persistence/sqlite_recovery.py`
   - `orchestrator/persistence/artifact_recovery.py`
-  - `orchestrator/persistence/schemas.py`
+- `orchestrator/persistence/schemas.py`
+
+## Planning Intelligence
+
+The planner now receives two additional decision-support blocks on every non-trivial plan cycle:
+
+1. `structured experiment memory`
+2. `baseline/research context`
+
+These are advisory inputs for Codex and Ralph. They do not decide run success directly, but they narrow the next recipe search space and make planner prompts less stateless.
+
+### Structured Experiment Memory
+
+`planning_stage.py` assembles:
+
+- `experiment_history`
+- `experiment_memory_summary`
+
+using:
+
+- `orchestrator/application/use_cases/run_tick/planning_context.py`
+- `orchestrator/application/use_cases/run_tick/verification_flow.py`
+- `orchestrator/persistence/experiment_attempts_repository.py`
+
+The persisted ledger for each experiment attempt now includes:
+
+- `metrics`
+- `hyperparameters`
+- `recipe_snapshot_json`
+- `recipe_diff_json`
+- `strategy`
+- `skill_paths`
+
+`recipe_snapshot_json` captures the recipe state used for a specific attempt, for example:
+
+- epochs
+- learning rate
+- batch size
+- optimizer
+- weight decay
+- dropout
+- model
+- chosen intervention
+- selected skill paths
+- micro-training phase
+
+`recipe_diff_json` stores the explicit diff versus the previous comparable attempt for the same `workspace_id + goal_signature`.
+
+The planner-facing memory summary compacts this into:
+
+- latest attempt
+- best attempt
+- recent metric deltas
+- repeated interventions
+- recent hyperparameter moves
+- recent recipe diffs
+- heuristic readout
+
+This keeps planner prompts small while still exposing "what changed" instead of only "what metric moved".
+The same compact summary is also persisted onto `run.plan_json` so the UI can render planner memory without parsing prompt artifacts.
+
+### Baseline / Research Context
+
+`orchestrator/application/services/baseline_research_service.py` now resolves research context in this order:
+
+1. direct `arXiv` API lookup
+2. direct `Hugging Face Papers` trending lookup and enrichment
+3. optional custom research backend override
+4. local `pdf_chunks_fts` lookup
+5. heuristic fallback
+
+The direct web path is the default.
+
+`arXiv` is used as the primary query-driven source:
+
+- dataset + task family + target metric + baseline phrasing
+
+`Hugging Face Papers` is used as a secondary trending source:
+
+- rerank and enrich likely relevant recent papers
+
+The resulting planner summary includes fields like:
+
+- `lookup_mode`
+- `research_sources`
+- `research_queries`
+- `research_hit_1..N`
+- `next_research_focus`
+- `secondary_focus`
+
+This means the planner can see both local experiment memory and external baseline guidance before choosing the next intervention.
+The compact research summary is also persisted onto `run.plan_json` for UI and diagnostics.
 
 ### `orchestrator/runtime`
 - Composition root and runtime loops.

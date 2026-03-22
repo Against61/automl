@@ -158,6 +158,12 @@ class RunPlanningStage:
             previous_verification=previous_verification,
             experiment_history=experiment_history,
         )
+        plan = plan.model_copy(
+            update={
+                "experiment_memory_summary": experiment_memory_summary,
+                "baseline_research_summary": baseline_research_summary,
+            }
+        )
         quality_plan_issue = self.execution_guard_service.plan_quality_execution_issue(
             task=task,
             workspace_path=workspace_path,

@@ -404,6 +404,8 @@ class PlannerPlan(BaseModel):
     summary: str = Field(min_length=1)
     steps: list[PlannerStep] = Field(min_length=1)
     planner_sanitization: list["PlannerSanitizationEntry"] = Field(default_factory=list)
+    experiment_memory_summary: str | None = None
+    baseline_research_summary: str | None = None
 
     @model_validator(mode="after")
     def step_ids_unique(self) -> "PlannerPlan":

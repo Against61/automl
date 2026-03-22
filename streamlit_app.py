@@ -78,12 +78,92 @@ def _load_json_if_exists(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _load_text_if_exists(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
 def _verification_for_display(run_payload: dict[str, Any]) -> dict[str, Any] | None:
     verification = run_payload.get("verification_json")
     if isinstance(verification, dict):
         return verification
     run_id = str(run_payload.get("run_id") or "").strip()
     return _load_verification_fallback(run_id)
+
+
+def _latest_prompt_artifact(run_id: str) -> Path | None:
+    if not run_id:
+        return None
+    run_dir = Path("workspace") / "runs" / run_id
+    if not run_dir.exists():
+        return None
+    candidates = sorted(run_dir.glob("*.prompt.txt"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _extract_prompt_section(text: str, heading: str) -> str | None:
+    if not text or not heading:
+        return None
+    pattern = re.compile(
+        rf"{re.escape(heading)}\n(?P<body>.*?)(?=\n\n(?:[A-Z][^\n]*:|[A-Z][A-Za-z /_-]+:\n)|\Z)",
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return None
+    body = match.group("body").strip()
+    return body or None
+
+
+def _parse_bullet_pairs(block: str | None) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    if not block:
+        return parsed
+    for line in block.splitlines():
+        raw = line.strip()
+        if not raw.startswith("- ") or ":" not in raw:
+            continue
+        key, value = raw[2:].split(":", 1)
+        cleaned_key = key.strip().lower().replace(" ", "_")
+        cleaned_value = value.strip()
+        if cleaned_key and cleaned_value:
+            parsed[cleaned_key] = cleaned_value
+    return parsed
+
+
+def _planning_insights_payload(run_payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    plan_payload = run_payload.get("plan_json") if isinstance(run_payload.get("plan_json"), dict) else {}
+    experiment_memory_from_plan = str(plan_payload.get("experiment_memory_summary") or "").strip()
+    baseline_research_from_plan = str(plan_payload.get("baseline_research_summary") or "").strip()
+    if experiment_memory_from_plan or baseline_research_from_plan:
+        return {
+            "experiment_memory": experiment_memory_from_plan or None,
+            "baseline_research": baseline_research_from_plan or None,
+            "experiment_memory_fields": _parse_bullet_pairs(experiment_memory_from_plan),
+            "baseline_research_fields": _parse_bullet_pairs(baseline_research_from_plan),
+        }, "run.plan_json"
+
+    run_id = str(run_payload.get("run_id") or "").strip()
+    prompt_path = _latest_prompt_artifact(run_id)
+    if not prompt_path:
+        return None, None
+    text = _load_text_if_exists(prompt_path)
+    if not text:
+        return None, str(prompt_path)
+    experiment_memory = _extract_prompt_section(text, "Structured experiment memory:")
+    baseline_research = _extract_prompt_section(text, "Baseline/research context:")
+    if not experiment_memory and not baseline_research:
+        return None, str(prompt_path)
+    return {
+        "experiment_memory": experiment_memory,
+        "baseline_research": baseline_research,
+        "experiment_memory_fields": _parse_bullet_pairs(experiment_memory),
+        "baseline_research_fields": _parse_bullet_pairs(baseline_research),
+    }, str(prompt_path)
 
 
 def _structured_metrics_payload(run_payload: dict[str, Any], task_payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
@@ -1041,6 +1121,42 @@ def _render_metric_resolution(run_payload: dict[str, Any]) -> None:
         st.caption(reason)
 
 
+def _render_planning_insights(run_payload: dict[str, Any]) -> None:
+    insights, source = _planning_insights_payload(run_payload)
+    if not insights:
+        st.info("Planning research and experiment memory are not available yet.")
+        if source:
+            st.caption(f"Latest prompt checked: `{source}`")
+        return
+
+    st.subheader("Planning Intelligence")
+    if source:
+        st.caption(f"Source prompt: `{source}`")
+
+    experiment_memory = str(insights.get("experiment_memory") or "").strip()
+    baseline_research = str(insights.get("baseline_research") or "").strip()
+    experiment_fields = insights.get("experiment_memory_fields") if isinstance(insights.get("experiment_memory_fields"), dict) else {}
+    research_fields = insights.get("baseline_research_fields") if isinstance(insights.get("baseline_research_fields"), dict) else {}
+
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Lookup Mode", str(research_fields.get("lookup_mode") or "n/a"))
+    summary_cols[1].metric("Research Sources", str(research_fields.get("research_sources") or "n/a"))
+    summary_cols[2].metric("Latest Attempt", str(experiment_fields.get("latest_attempt") or "n/a"))
+    summary_cols[3].metric("Best Attempt", str(experiment_fields.get("best_attempt") or "n/a"))
+
+    memory_tab, research_tab = st.tabs(["Experiment Memory", "Research Context"])
+    with memory_tab:
+        if experiment_memory:
+            st.code(experiment_memory, language="text")
+        else:
+            st.info("No structured experiment memory block found in the latest prompt.")
+    with research_tab:
+        if baseline_research:
+            st.code(baseline_research, language="text")
+        else:
+            st.info("No baseline research block found in the latest prompt.")
+
+
 def _render_run_stream(base_url: str, run_id: str) -> None:
     run_payload = _api_call(base_url, "GET", f"/runs/{run_id}")
     status_payload = _api_call(base_url, "GET", f"/status/{run_id}")
@@ -1151,6 +1267,7 @@ def _render_run_stream(base_url: str, run_id: str) -> None:
     with timeline_tab:
         _render_plan(run_payload.get("plan_json"))
         _render_improvement_strategy(run_payload)
+        _render_planning_insights(run_payload)
         _render_task_intent(run_payload, task_payload)
         _render_structured_metrics(run_payload, task_payload)
         _render_metric_resolution(run_payload)
