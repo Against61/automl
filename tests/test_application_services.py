@@ -1647,6 +1647,7 @@ def test_planning_context_service_builds_structured_experiment_memory_summary():
     assert "latest_attempt:" in summary
     assert "best_attempt:" in summary
     assert "recent_metric_deltas:" in summary
+    assert "recent_recipe_diffs:" in summary
     assert "repeated_interventions:" in summary
 
 
@@ -1667,14 +1668,35 @@ def test_planning_context_service_filters_lightning_skill_paths():
     assert selected == ["skills/seaborn/SKILL.md"]
 
 
-def test_baseline_research_service_builds_dataset_brief(tmp_path: Path):
-    service = BaselineResearchService()
+@pytest.mark.asyncio
+async def test_baseline_research_service_builds_dataset_brief(tmp_path: Path):
+    db = Database(tmp_path / "orchestrator.db")
+    await db.connect()
+    service = BaselineResearchService(db)
     task = {
         "goal": "Train a FashionMNIST classifier and report accuracy",
         "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 92%"]),
+        "pdf_scope_json": json.dumps(["knowledge/pdfs/fashionmnist_baselines.pdf"]),
     }
+    doc_id, _created = await db.upsert_pdf_document(
+        path="knowledge/pdfs/fashionmnist_baselines.pdf",
+        content_hash="hash-fashion",
+        mtime=1.0,
+        page_count=1,
+    )
+    await db.replace_pdf_chunks(
+        doc_id,
+        "knowledge/pdfs/fashionmnist_baselines.pdf",
+        [
+            (
+                0,
+                1,
+                "FashionMNIST classification baselines usually report validation accuracy and compare optimizer schedule, augmentation, and held-out split discipline.",
+            )
+        ],
+    )
 
-    summary = service.build_summary(
+    summary = await service.build_summary(
         task=task,
         workspace_path=tmp_path,
         experiment_history=[
@@ -1686,5 +1708,5 @@ def test_baseline_research_service_builds_dataset_brief(tmp_path: Path):
     )
 
     assert "dataset_hint: fashionmnist" in summary.lower()
-    assert "baseline_expectation:" in summary
-    assert "next_research_focus:" in summary
+    assert "lookup_mode: pdf_fts" in summary
+    assert "research_hit_1:" in summary

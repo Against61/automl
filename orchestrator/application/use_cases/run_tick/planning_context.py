@@ -172,6 +172,7 @@ class PlanningContextService:
         latest = recent[-1]
         best = PlanningContextService._best_attempt(recent)
         delta_lines = PlanningContextService._recent_metric_deltas(recent)
+        recipe_diff_lines = PlanningContextService._recent_recipe_diffs(recent)
         intervention_summary = PlanningContextService._repeated_interventions(recent)
         hp_summary = PlanningContextService._recent_hyperparameter_moves(recent)
 
@@ -184,6 +185,8 @@ class PlanningContextService:
             lines.append(best_line)
         if delta_lines:
             lines.append(f"- recent_metric_deltas: {'; '.join(delta_lines)}")
+        if recipe_diff_lines:
+            lines.append(f"- recent_recipe_diffs: {'; '.join(recipe_diff_lines)}")
         if intervention_summary:
             lines.append(f"- repeated_interventions: {intervention_summary}")
         if hp_summary:
@@ -398,6 +401,21 @@ class PlanningContextService:
         return ", ".join(repeated[:3]) or None
 
     @classmethod
+    def _recent_recipe_diffs(cls, attempts: list[dict[str, Any]]) -> list[str]:
+        diffs: list[str] = []
+        previous_snapshot: dict[str, Any] | None = None
+        previous_attempt = None
+        for item in attempts[-4:]:
+            snapshot = cls._recipe_snapshot(item)
+            if previous_snapshot is not None:
+                changes = cls._recipe_changes(previous_snapshot, snapshot)
+                if changes:
+                    diffs.append(f"{previous_attempt}->{item.get('attempt')}: {', '.join(changes[:4])}")
+            previous_snapshot = snapshot
+            previous_attempt = item.get("attempt")
+        return diffs[:3]
+
+    @classmethod
     def _recent_hyperparameter_moves(cls, attempts: list[dict[str, Any]]) -> str | None:
         latest_values: dict[str, Any] = {}
         for item in attempts[-3:]:
@@ -429,6 +447,40 @@ class PlanningContextService:
         if comparable[-1][1] > comparable[0][1]:
             return "current recipe is still moving in the right direction; expanding budget is justified before broad search"
         return None
+
+    @classmethod
+    def _recipe_snapshot(cls, item: dict[str, Any]) -> dict[str, Any]:
+        hyperparameters = item.get("hyperparameters") if isinstance(item.get("hyperparameters"), dict) else {}
+        strategy = item.get("strategy") if isinstance(item.get("strategy"), dict) else {}
+        chosen_intervention = cls._extract_intervention_id(item)
+        snapshot: dict[str, Any] = {
+            "intervention": chosen_intervention or "n/a",
+        }
+        for key in ("epochs", "learning_rate", "batch_size", "optimizer", "weight_decay", "dropout", "model"):
+            if key in hyperparameters:
+                snapshot[key] = hyperparameters.get(key)
+        chosen = strategy.get("chosen_intervention")
+        if isinstance(chosen, dict):
+            skill_paths = chosen.get("skill_paths")
+            if isinstance(skill_paths, list) and skill_paths:
+                snapshot["skill_paths"] = [
+                    str(value).strip()
+                    for value in skill_paths[:3]
+                    if str(value).strip() and not cls._is_excluded_skill_path(str(value))
+                ]
+        return snapshot
+
+    @staticmethod
+    def _recipe_changes(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
+        changes: list[str] = []
+        keys = sorted(set(previous.keys()) | set(current.keys()))
+        for key in keys:
+            before = previous.get(key)
+            after = current.get(key)
+            if before == after:
+                continue
+            changes.append(f"{key} {before!r}->{after!r}")
+        return changes
 
     @classmethod
     def _extract_metric_signal(cls, item: dict[str, Any]) -> tuple[str, float, bool] | None:

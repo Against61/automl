@@ -69,7 +69,7 @@ class RunPlanningStage:
             experiment_history
         )
         experiment_memory_summary = self.planning_context_service.build_experiment_memory_summary(experiment_history)
-        baseline_research_summary = self.baseline_research_service.build_summary(
+        baseline_research_summary = await self.baseline_research_service.build_summary(
             task=task,
             workspace_path=workspace_path,
             experiment_history=experiment_history,
