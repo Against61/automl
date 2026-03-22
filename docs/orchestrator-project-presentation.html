@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>OpenIn Orchestrator Presentation</title>
+  <style>
+    @page { size: A4 landscape; margin: 0; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      background: #f3f5f7;
+      color: #16202a;
+    }
+    .slide {
+      width: 297mm;
+      height: 210mm;
+      box-sizing: border-box;
+      padding: 14mm 16mm;
+      page-break-after: always;
+      background: linear-gradient(180deg, #f9fafb 0%, #eef2f5 100%);
+      position: relative;
+      overflow: hidden;
+    }
+    .slide:last-child { page-break-after: auto; }
+    .eyebrow {
+      font-size: 11pt;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #0b6e4f;
+      margin-bottom: 6mm;
+    }
+    h1, h2 {
+      margin: 0 0 6mm 0;
+      line-height: 1.05;
+    }
+    h1 { font-size: 28pt; }
+    h2 { font-size: 24pt; }
+    p, li { font-size: 13pt; line-height: 1.45; }
+    .muted { color: #52606d; }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 8mm;
+    }
+    .three-col {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6mm;
+    }
+    .four-col {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6mm;
+    }
+    .card {
+      border: 1px solid #c9d2db;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.92);
+      padding: 5mm;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+    }
+    .card h3 {
+      margin: 0 0 3mm 0;
+      font-size: 15pt;
+      color: #15202b;
+    }
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3mm;
+      margin: 3mm 0 6mm 0;
+    }
+    .chip {
+      padding: 1.5mm 3mm;
+      border-radius: 999px;
+      font-size: 10pt;
+      font-weight: 700;
+      background: #dff3ea;
+      color: #0b6e4f;
+      border: 1px solid #b4dfcf;
+    }
+    .big-quote {
+      font-size: 17pt;
+      line-height: 1.35;
+      font-weight: 600;
+      color: #18212b;
+    }
+    .metric {
+      border-radius: 12px;
+      background: #18212b;
+      color: white;
+      padding: 4mm;
+    }
+    .metric .label {
+      font-size: 10pt;
+      opacity: 0.8;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .metric .value {
+      font-size: 20pt;
+      font-weight: 800;
+      margin-top: 2mm;
+    }
+    .flow {
+      display: flex;
+      align-items: center;
+      gap: 4mm;
+      margin: 4mm 0;
+      flex-wrap: wrap;
+    }
+    .box {
+      flex: 1 1 auto;
+      min-width: 42mm;
+      border-radius: 12px;
+      padding: 4mm;
+      font-size: 12pt;
+      font-weight: 700;
+      text-align: center;
+      border: 1px solid #bcc7d1;
+      background: #fff;
+    }
+    .box.yellow { background: #fff4d6; border-color: #e7c768; }
+    .box.green { background: #e9f7eb; border-color: #88c492; }
+    .box.blue { background: #e8f0fb; border-color: #7ca6d8; }
+    .box.red { background: #fae7e7; border-color: #d88f8f; }
+    .box.purple { background: #f0e9f8; border-color: #aa92d5; }
+    .arrow { font-size: 18pt; font-weight: 800; color: #3b4b5a; }
+    .stack {
+      display: grid;
+      gap: 4mm;
+    }
+    .layer {
+      border-radius: 12px;
+      padding: 5mm;
+      border: 1px solid #c5ced8;
+      background: rgba(255,255,255,0.92);
+    }
+    .layer-title {
+      font-size: 15pt;
+      font-weight: 800;
+      margin-bottom: 3mm;
+    }
+    .small { font-size: 11pt; }
+    .footer {
+      position: absolute;
+      left: 16mm;
+      right: 16mm;
+      bottom: 8mm;
+      display: flex;
+      justify-content: space-between;
+      font-size: 10pt;
+      color: #607080;
+    }
+    ul { margin: 0; padding-left: 5mm; }
+    .matrix {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6mm;
+    }
+  </style>
+</head>
+<body>
+  <section class="slide">
+    <div class="eyebrow">OpenIn / Project Presentation</div>
+    <h1>OpenIn Orchestrator</h1>
+    <div class="chip-row">
+      <span class="chip">Stage-based runtime</span>
+      <span class="chip">Codex execution</span>
+      <span class="chip">Ralph story mode</span>
+      <span class="chip">Run-scoped metrics</span>
+      <span class="chip">Direct research adapters</span>
+    </div>
+    <div class="two-col">
+      <div>
+        <p class="big-quote">Сервис управляет полным циклом ML/agent run: от постановки задачи и планирования до исполнения, проверки качества, упаковки результатов и повторного replanning.</p>
+        <p>Текущая архитектура ушла от monolithic runtime к явным stage handlers, persisted experiment memory и более контролируемому search loop.</p>
+      </div>
+      <div class="stack">
+        <div class="metric"><div class="label">Core runtime idea</div><div class="value">One run, many loops</div></div>
+        <div class="metric"><div class="label">Planning intelligence</div><div class="value">Memory + Research</div></div>
+        <div class="metric"><div class="label">Execution contract</div><div class="value">Run-scoped artifacts</div></div>
+      </div>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>1</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">Project Scope</div>
+    <h2>Что делает проект</h2>
+    <div class="three-col">
+      <div class="card">
+        <h3>1. Управляет run lifecycle</h3>
+        <ul>
+          <li>создает и возобновляет run</li>
+          <li>ведет статусы и replans</li>
+          <li>фиксирует terminal outcome</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>2. Планирует и исполняет шаги</h3>
+        <ul>
+          <li>Ralph story planning</li>
+          <li>обычный planner build/replan</li>
+          <li>Codex и shell execution</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>3. Проверяет качество</h3>
+        <ul>
+          <li>verifier и quality gate</li>
+          <li>improvement strategy</li>
+          <li>micro-training policy</li>
+        </ul>
+      </div>
+    </div>
+    <div style="height:6mm"></div>
+    <div class="three-col">
+      <div class="card">
+        <h3>4. Хранит историю экспериментов</h3>
+        <ul>
+          <li>experiment attempts</li>
+          <li>recipe snapshots</li>
+          <li>recipe diffs</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>5. Подсказывает следующий ход</h3>
+        <ul>
+          <li>structured experiment memory</li>
+          <li>baseline research context</li>
+          <li>planner directives</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>6. Отдает наблюдаемость</h3>
+        <ul>
+          <li>API + Streamlit UI</li>
+          <li>run steps / artifacts</li>
+          <li>planning intelligence в UI</li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>2</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">Cycles</div>
+    <h2>Ключевые циклы системы</h2>
+    <div class="flow">
+      <div class="box yellow">RECEIVED / CONTEXT_READY</div>
+      <div class="arrow">→</div>
+      <div class="box green">PLANNING</div>
+      <div class="arrow">→</div>
+      <div class="box purple">EXECUTING</div>
+      <div class="arrow">→</div>
+      <div class="box red">VERIFYING</div>
+      <div class="arrow">→</div>
+      <div class="box blue">PACKAGING</div>
+      <div class="arrow">→</div>
+      <div class="box green">TERMINAL</div>
+    </div>
+    <div class="matrix" style="margin-top: 8mm;">
+      <div class="card">
+        <h3>Execution cycle</h3>
+        <p>Главный replan loop: `CONTEXT_READY → PLANNING → EXECUTING → VERIFYING`. Если нужен replan, `execution_cycle` увеличивается и run возвращается в `CONTEXT_READY`.</p>
+      </div>
+      <div class="card">
+        <h3>Step loop</h3>
+        <p>Внутри `EXECUTING` сервис крутит `next_step_index`, исполняет шаг, пишет `run_step`, двигается к следующему шагу или уходит в `EXECUTION_REPLAN`.</p>
+      </div>
+      <div class="card">
+        <h3>Quality / strategy loop</h3>
+        <p>Если quality gate failed, строится `improvement_strategy`, используется experiment memory + research context, и planner генерирует следующий рецепт.</p>
+      </div>
+      <div class="card">
+        <h3>Micro-training ladder</h3>
+        <p>Текущее правило: `1 epoch → 2 epochs → 5 epochs`. Нет роста на 2 эпохах — меняем стратегию и снова стартуем с 1.</p>
+      </div>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>3</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">DDD</div>
+    <h2>DDD-схема проекта</h2>
+    <div class="stack">
+      <div class="layer" style="background:#e8f0fb;border-color:#7ca6d8;">
+        <div class="layer-title">Presentation / Delivery</div>
+        <p>`orchestrator/app/api.py`, `streamlit_app.py`, event gateways. Здесь живут HTTP endpoints, UI и точки входа для внешних операторов и сервисов.</p>
+      </div>
+      <div class="layer" style="background:#e9f7eb;border-color:#88c492;">
+        <div class="layer-title">Application</div>
+        <p>`ProcessRunTickUseCase`, stage handlers и orchestration services. Этот слой владеет lifecycle-решениями, planning context, verification persistence flow и orchestration policy.</p>
+      </div>
+      <div class="layer" style="background:#fff4d6;border-color:#e7c768;">
+        <div class="layer-title">Domain</div>
+        <p>`domain/state_machine.py` и инварианты. Здесь нет знания о Redis, SQLite, файловой системе, Codex CLI или HTTP.</p>
+      </div>
+      <div class="layer" style="background:#f0e9f8;border-color:#aa92d5;">
+        <div class="layer-title">Infrastructure / Adapters</div>
+        <p>Persistence, planner adapters, Codex runner, verifier, artifact publisher, runtime composition. Этот слой связывает application с внешним миром.</p>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:6mm;">Практический смысл: доменный слой остается маленьким и проверяемым, application orchestrates, infrastructure подключает транспорт, storage и tool execution.</p>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>4</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">Architecture</div>
+    <h2>Текущая архитектурная схема</h2>
+    <div class="three-col">
+      <div class="card">
+        <h3>Ingress</h3>
+        <ul>
+          <li>FastAPI API</li>
+          <li>Redis / in-memory bus</li>
+          <li>SessionManager + runtime/service</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Core orchestration</h3>
+        <ul>
+          <li>`ProcessRunTickUseCase`</li>
+          <li>stage handlers</li>
+          <li>policy + guards</li>
+          <li>Ralph scenario service</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Execution + persistence</h3>
+        <ul>
+          <li>CodexRunner / Verifier</li>
+          <li>ArtifactPublisher</li>
+          <li>SQLite repositories</li>
+          <li>workspace FS</li>
+        </ul>
+      </div>
+    </div>
+    <div style="height: 7mm;"></div>
+    <div class="two-col">
+      <div class="card">
+        <h3>Planning intelligence</h3>
+        <ul>
+          <li>`PlanningContextService`</li>
+          <li>`BaselineResearchService`</li>
+          <li>`MicroTrainingPolicyService`</li>
+          <li>`ImprovementStrategyService`</li>
+          <li>`WorkspaceSnapshotService`</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Persistence model</h3>
+        <ul>
+          <li>`runs.plan_json` хранит planning intelligence summaries</li>
+          <li>`experiment_attempts` хранит `recipe_snapshot_json / recipe_diff_json`</li>
+          <li>UI может читать planner memory без парсинга prompt-файлов</li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>5</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">Planning Intelligence</div>
+    <h2>Как сервис выбирает следующий шаг</h2>
+    <div class="two-col">
+      <div class="card">
+        <h3>Structured experiment memory</h3>
+        <ul>
+          <li>latest attempt</li>
+          <li>best attempt</li>
+          <li>recent metric deltas</li>
+          <li>repeated interventions</li>
+          <li>recent hyperparameter moves</li>
+          <li>recent recipe diffs</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Baseline / research context</h3>
+        <ul>
+          <li>direct `arXiv` lookup</li>
+          <li>`Hugging Face Papers` trending enrichment</li>
+          <li>optional custom backend fallback</li>
+          <li>`pdf_fts` and heuristic fallback</li>
+        </ul>
+      </div>
+    </div>
+    <div style="height: 7mm;"></div>
+    <div class="card">
+      <h3>Итог</h3>
+      <p>Planner больше не работает как stateless editor. Он видит, что уже пробовали, какой recipe реально изменился, где был рост метрики и что подсказывает внешний research по dataset/task/metric.</p>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>6</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">Execution & Verification</div>
+    <h2>Контроль качества и честности обучения</h2>
+    <div class="three-col">
+      <div class="card">
+        <h3>Run-scoped artifacts</h3>
+        <p>Verifier больше не сканирует весь workspace. Acceptance идет только по текущему `run-scoped metrics artifact`.</p>
+      </div>
+      <div class="card">
+        <h3>Policy guards</h3>
+        <p>Гварды режут synthetic smoke, task reformulation, foreign metrics path, inconsistent planning-only success и прочие ложные успехи.</p>
+      </div>
+      <div class="card">
+        <h3>Quality gate</h3>
+        <p>Success не засчитывается без materialized target metric, корректной intent validation и валидного acceptance artifact.</p>
+      </div>
+    </div>
+    <div style="height: 7mm;"></div>
+    <div class="card">
+      <h3>Практический эффект</h3>
+      <p>Система стала устойчивее к двум классам проблем: ложным высоким метрикам из stale artifacts и «умным» подменам задачи ради удобной метрики.</p>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>7</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">Persistence</div>
+    <h2>Что сохраняется и почему это важно</h2>
+    <div class="four-col">
+      <div class="card"><h3>tasks</h3><p class="small">goal, constraints, execution mode, contract-like inputs</p></div>
+      <div class="card"><h3>runs</h3><p class="small">status, plan_json, verification_json, error_message, execution_cycle</p></div>
+      <div class="card"><h3>run_steps</h3><p class="small">история фактических step attempts, stdout/stderr, status</p></div>
+      <div class="card"><h3>experiment_attempts</h3><p class="small">metrics, hyperparameters, strategy, `recipe_snapshot`, `recipe_diff`</p></div>
+    </div>
+    <div style="height: 7mm;"></div>
+    <div class="two-col">
+      <div class="card">
+        <h3>Почему важен `recipe_diff`</h3>
+        <p>Он превращает vague history «мы что-то уже пробовали» в явное знание «мы подняли epochs, снизили learning_rate и сменили intervention, и это дало / не дало эффект».</p>
+      </div>
+      <div class="card">
+        <h3>Почему важен `plan_json` metadata</h3>
+        <p>UI и диагностика теперь видят planning intelligence напрямую из persisted plan metadata, а не только из transient prompt-артефактов.</p>
+      </div>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>8</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">External Connections</div>
+    <h2>Внешние подключения</h2>
+    <div class="three-col">
+      <div class="card">
+        <h3>Operational</h3>
+        <ul>
+          <li>Streamlit UI</li>
+          <li>HTTP / CLI clients</li>
+          <li>Redis streams</li>
+          <li>SQLite DB</li>
+          <li>workspace filesystem</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Execution</h3>
+        <ul>
+          <li>Codex CLI</li>
+          <li>shell commands inside workspace</li>
+          <li>skills and prompt contract</li>
+          <li>artifact publishing</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Research</h3>
+        <ul>
+          <li>`arXiv` API</li>
+          <li>`Hugging Face Papers` API</li>
+          <li>optional custom backend</li>
+          <li>local PDF FTS fallback</li>
+        </ul>
+      </div>
+    </div>
+    <div style="height: 7mm;"></div>
+    <div class="card">
+      <h3>Текущий принцип</h3>
+      <p>Web research больше не завязан на обязательный отдельный backend. Базовый режим — direct adapters (`arXiv` + `HF Papers`), а custom backend остается только optional fallback.</p>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>9</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">UI</div>
+    <h2>Как оператор видит систему</h2>
+    <div class="two-col">
+      <div class="card">
+        <h3>Run Monitor</h3>
+        <ul>
+          <li>status и event feed</li>
+          <li>plan / steps / artifacts</li>
+          <li>task intent и structured metrics</li>
+          <li>improvement strategy</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Planning Intelligence</h3>
+        <ul>
+          <li>`Lookup Mode`</li>
+          <li>`Research Sources`</li>
+          <li>`Latest Attempt`</li>
+          <li>`Best Attempt`</li>
+          <li>вкладки `Experiment Memory` и `Research Context`</li>
+        </ul>
+      </div>
+    </div>
+    <div style="height: 7mm;"></div>
+    <div class="card">
+      <h3>Зачем это оператору</h3>
+      <p>Видно не только что run сейчас делает, но и почему planner решил именно так: на чем основан следующий intervention и какая внешняя research-подсказка была использована.</p>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>10</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">Strengths</div>
+    <h2>Что уже сильное в текущей версии</h2>
+    <div class="matrix">
+      <div class="card">
+        <h3>1. Управляемые циклы</h3>
+        <p>Lifecycle, execution replan, quality loop, micro-training ladder и Ralph loop теперь разделены концептуально и в коде.</p>
+      </div>
+      <div class="card">
+        <h3>2. Накопление памяти</h3>
+        <p>Система сохраняет recipe snapshots и diffs вместо того, чтобы каждый раз думать почти с нуля.</p>
+      </div>
+      <div class="card">
+        <h3>3. Более честная верификация</h3>
+        <p>Run-scoped metrics, intent validation и policy guards снижают риск ложных successes.</p>
+      </div>
+      <div class="card">
+        <h3>4. Planning intelligence в UI</h3>
+        <p>Теперь reasoning planner виден оператору, а не только buried in prompts.</p>
+      </div>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="eyebrow">Next Steps</div>
+    <h2>Что логично делать дальше</h2>
+    <div class="three-col">
+      <div class="card">
+        <h3>Trajectory predictor</h3>
+        <p>Отдельный advisory model, который оценивает вероятность роста/плато до следующего расширения бюджета.</p>
+      </div>
+      <div class="card">
+        <h3>Richer recipe ledger</h3>
+        <p>Явный config diff и более глубокая causal память: какие именно изменения дали рост или деградацию.</p>
+      </div>
+      <div class="card">
+        <h3>Research ranking</h3>
+        <p>Более умный merge `arXiv + HF Papers`, а затем optional custom backend как enterprise override.</p>
+      </div>
+    </div>
+    <div style="height: 10mm;"></div>
+    <div class="card">
+      <h3>Короткий итог</h3>
+      <p>Проект уже выглядит как управляемый orchestration runtime для ML-agent loops, а не как один большой procedural script. Дальнейший рост качества теперь зависит в основном от intelligence layers, а не от базовой runtime mechanics.</p>
+    </div>
+    <div class="footer"><span>OpenIn Orchestrator</span><span>12</span></div>
+  </section>
+</body>
+</html>
