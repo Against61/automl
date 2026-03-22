@@ -1,257 +1,319 @@
-<mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36" version="29.6.0" pages="2">
-  <diagram id="architecture-page" name="Architecture">
-    <mxGraphModel dx="3497" dy="2265" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
+<mxfile host="app.diagrams.net" agent="Codex" version="29.6.0" pages="4">
+  <diagram id="cycles-page" name="Cycles">
+    <mxGraphModel dx="1600" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;" value="External Clients&#xa;- Streamlit UI&#xa;- CLI / HTTP callers&#xa;- Future webhooks" vertex="1">
-          <mxGeometry height="110" width="210" x="-170" y="55" as="geometry" />
+        <mxCell id="2" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;" value="task.submitted" vertex="1">
+          <mxGeometry x="70" y="120" width="140" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" value="FastAPI API&#xa;orchestrator/app/api.py&#xa;- POST /event&#xa;- POST /control/*&#xa;- GET /runs/{id}" vertex="1">
-          <mxGeometry height="110" width="220" x="90" y="55" as="geometry" />
+        <mxCell id="3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" value="RECEIVED / CONTEXT_READY&#xa;- load task + run&#xa;- recover state&#xa;- assemble planning context" vertex="1">
+          <mxGeometry x="270" y="90" width="250" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" value="Event Bus&#xa;Redis Streams / InMemory bus&#xa;- agent.tasks&#xa;- agent.control&#xa;- agent.internal&#xa;- agent.results" vertex="1">
-          <mxGeometry height="130" width="240" x="370" y="45" as="geometry" />
+        <mxCell id="4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" value="PLANNING CYCLE&#xa;- Ralph plan or planner build/replan&#xa;- attach skills&#xa;- persist plan_json" vertex="1">
+          <mxGeometry x="590" y="90" width="250" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" value="Runtime Service&#xa;orchestrator/runtime/service.py&#xa;- worker loop&#xa;- bus polling&#xa;- recovery on startup" vertex="1">
-          <mxGeometry height="130" width="240" x="820" y="-100" as="geometry" />
+        <mxCell id="5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;" value="EXECUTING&#xa;- run plan steps&#xa;- policy + contract checks&#xa;- Codex / shell / verify steps" vertex="1">
+          <mxGeometry x="910" y="90" width="250" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;" value="ProcessRunTickUseCase&#xa;application/use_cases/process_run_tick.py&#xa;- main orchestration logic&#xa;- run state transitions&#xa;- planner / execute / verify / package" vertex="1">
-          <mxGeometry height="150" width="280" x="1230" y="110" as="geometry" />
+        <mxCell id="6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" value="VERIFYING&#xa;- read current run-scoped metrics&#xa;- quality gate&#xa;- improvement strategy&#xa;- record experiment attempt" vertex="1">
+          <mxGeometry x="1230" y="90" width="260" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="7" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=14;" value="SQLite DB&#xa;tasks / runs / steps / events / artifacts&#xa;orchestrator/persistence/db.py" vertex="1">
-          <mxGeometry height="100" width="220" x="1540" y="-100" as="geometry" />
+        <mxCell id="7" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;" value="PACKAGING&#xa;- publish artifacts&#xa;- result event&#xa;- final summary" vertex="1">
+          <mxGeometry x="1550" y="95" width="190" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="8" parent="1" style="shape=folder;tabWidth=60;tabHeight=20;tabPosition=left;html=1;boundedLbl=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=14;" value="Workspace FS&#xa;- workspace/runs/*&#xa;- workspace/demo/*&#xa;- .agent/workspace_snapshot.*&#xa;- artifacts / result.json / patch bundle" vertex="1">
-          <mxGeometry height="120" width="230" x="1970" y="-120" as="geometry" />
+        <mxCell id="8" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" value="COMPLETED / FAILED / CANCELLED" vertex="1">
+          <mxGeometry x="1545" y="310" width="210" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="9" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" value="Knowledge + Retrieval&#xa;knowledge/pdf_indexer.py&#xa;knowledge/retrieval.py&#xa;- PDF ingest / chunks / embeddings&#xa;- retrieval for planner" vertex="1">
-          <mxGeometry height="130" width="260" x="1070" y="460" as="geometry" />
+        <mxCell id="9" parent="1" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" value="Execution cycle loop&#xa;CONTEXT_READY -&gt; PLANNING -&gt; EXECUTING -&gt; VERIFYING&#xa;A replan increments execution_cycle and returns to CONTEXT_READY" vertex="1">
+          <mxGeometry x="620" y="300" width="390" height="110" as="geometry" />
         </mxCell>
-        <mxCell id="10" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;" value="Planner&#xa;planning/planner.py&#xa;- OpenAI planner / stub / codex_only&#xa;- returns PlannerPlan JSON" vertex="1">
-          <mxGeometry height="120" width="220" x="810" y="240" as="geometry" />
+        <mxCell id="10" parent="1" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" value="Step loop inside EXECUTING&#xa;next_step_index -> run step -> persist run_step -> advance&#xa;execution failure can trigger EXECUTION_REPLAN" vertex="1">
+          <mxGeometry x="910" y="270" width="250" height="110" as="geometry" />
         </mxCell>
-        <mxCell id="11" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" value="Ralph Scenario Service&#xa;application/services/ralph_service.py&#xa;- PRD bootstrap&#xa;- story selection&#xa;- quality gates across cycles" vertex="1">
-          <mxGeometry height="120" width="220" x="620" y="360" as="geometry" />
+        <mxCell id="11" parent="1" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" value="Micro-training ladder&#xa;1 epoch baseline -> 2 epochs growth check -> 5 epochs expand&#xa;No growth: rotate strategy and restart from 1" vertex="1">
+          <mxGeometry x="1230" y="285" width="260" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="12" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;" value="Policy + Domain Rules&#xa;- execution/policy.py&#xa;- domain/state_machine.py&#xa;- application/services/plan_contract_service.py&#xa;- application/services/quality_gate_service.py" vertex="1">
-          <mxGeometry height="140" width="280" x="1390" y="550" as="geometry" />
+        <mxCell id="12" parent="1" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" value="Quality / strategy loop&#xa;quality failed -> improvement_strategy + experiment memory + research context&#xa;planner builds next recipe change" vertex="1">
+          <mxGeometry x="1230" y="450" width="330" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="13" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;" value="Codex Runner&#xa;execution/codex_runner.py&#xa;- builds final prompt&#xa;- executes shell / codex step&#xa;- captures stdout/stderr / metrics / files_changed" vertex="1">
-          <mxGeometry height="130" width="220" x="960" y="640" as="geometry" />
+        <mxCell id="13" parent="1" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" value="Ralph story loop&#xa;ralph_story mode can re-enter planning even after a successful step&#xa;PRD / story state stays above step execution" vertex="1">
+          <mxGeometry x="540" y="450" width="320" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="14" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;" value="Codex CLI subprocess&#xa;inside dev container&#xa;- edits workspace&#xa;- runs commands&#xa;- uses skills / notes / prompt contract" vertex="1">
-          <mxGeometry height="120" width="220" x="620" y="640" as="geometry" />
-        </mxCell>
-        <mxCell id="15" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" value="Verifier + Artifact Publisher&#xa;- execution/verifier.py&#xa;- execution/artifacts.py&#xa;- package patch bundle&#xa;- produce result.json" vertex="1">
-          <mxGeometry height="130" width="260" x="1240" y="760" as="geometry" />
-        </mxCell>
-        <mxCell id="16" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" value="Result Consumers&#xa;- Streamlit status page&#xa;- downstream automation&#xa;- external systems via agent.results" vertex="1">
-          <mxGeometry height="110" width="220" x="1810" y="480" as="geometry" />
-        </mxCell>
-        <mxCell id="17" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=14;" value="Workspace Snapshot Service&#xa;application/services/workspace_snapshot_service.py&#xa;- refresh after steps&#xa;- compact tree for planner / Ralph / Codex" vertex="1">
-          <mxGeometry height="170" width="355.45" x="1550" y="900" as="geometry" />
-        </mxCell>
-        <mxCell id="18" edge="1" parent="1" source="2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="3" value="">
+        <mxCell id="14" edge="1" parent="1" source="2" target="3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="create / resume run">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="19" edge="1" parent="1" source="3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="4" value="submit / monitor / control">
+        <mxCell id="15" edge="1" parent="1" source="3" target="4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="build context">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="20" edge="1" parent="1" source="4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="5" value="consume task/control">
+        <mxCell id="16" edge="1" parent="1" source="4" target="5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="plan ready">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="21" edge="1" parent="1" source="5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="6" value="dispatch run tick">
+        <mxCell id="17" edge="1" parent="1" source="5" target="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="all steps complete">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="22" edge="1" parent="1" source="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="7" value="persist run state">
+        <mxCell id="18" edge="1" parent="1" source="6" target="7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="quality target met">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="23" edge="1" parent="1" source="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="8" value="artifacts / snapshots">
+        <mxCell id="19" edge="1" parent="1" source="7" target="8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="terminal publish">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="24" edge="1" parent="1" source="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="9" value="retrieve context">
+        <mxCell id="20" edge="1" parent="1" source="6" target="12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="quality failed">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="25" edge="1" parent="1" source="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="10" value="build / replan">
+        <mxCell id="21" edge="1" parent="1" source="12" target="4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="QUALITY_REPLAN">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="26" edge="1" parent="1" source="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="11" value="ralph_story branch">
+        <mxCell id="22" edge="1" parent="1" source="5" target="10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="step iteration">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="27" edge="1" parent="1" source="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="12" value="status / plan / quality rules">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="1370" y="310" />
-              <mxPoint x="1510" y="310" />
-            </Array>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="28" edge="1" parent="1" source="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="13" value="execute step">
+        <mxCell id="23" edge="1" parent="1" source="6" target="11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="continuation policy">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="29" edge="1" parent="1" source="13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="14" value="spawn codex / shell">
+        <mxCell id="24" edge="1" parent="1" source="11" target="4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="reset strategy / next epoch plan">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="30" edge="1" parent="1" source="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="15" value="verify + package">
+        <mxCell id="25" edge="1" parent="1" source="4" target="13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="ralph_story branch">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="31" edge="1" parent="1" source="15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="4" value="publish result">
+        <mxCell id="26" edge="1" parent="1" source="13" target="4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="next story / replan">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="32" edge="1" parent="1" source="4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="16" value="read result stream / API">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="33" edge="1" parent="1" source="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="17" value="refresh workspace model">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="34" edge="1" parent="1" source="17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="8" value="snapshot files">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="35" edge="1" parent="1" source="17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="10" value="prompt summary">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="36" edge="1" parent="1" source="11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="8" value="PRD / progress">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="37" edge="1" parent="1" source="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" target="4" value="internal events">
+        <mxCell id="27" edge="1" parent="1" source="5" target="4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="EXECUTION_REPLAN">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
-  <diagram id="runflow-page" name="Run Flow">
-    <mxGraphModel dx="1273" dy="1999" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
+  <diagram id="ddd-page" name="DDD">
+    <mxGraphModel dx="1600" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="100" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;" value="task.submitted" vertex="1">
-          <mxGeometry height="70" width="140" x="70" y="15" as="geometry" />
+        <mxCell id="2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=15;fontStyle=1;" value="DDD View&#xa;Dependencies point inward. Domain has no runtime, DB, Redis, HTTP, or Codex knowledge." vertex="1">
+          <mxGeometry x="420" y="30" width="920" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="101" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" value="RECEIVED&#xa;- create / resume run&#xa;- acquire workspace lock" vertex="1">
-          <mxGeometry height="90" width="220" x="280" y="5" as="geometry" />
+        <mxCell id="3" parent="1" style="swimlane;whiteSpace=wrap;html=1;startSize=28;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;" value="Presentation / Delivery">
+          <mxGeometry x="80" y="140" width="360" height="760" as="geometry" />
         </mxCell>
-        <mxCell id="102" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" value="CONTEXT_READY&#xa;- retrieve PDF context&#xa;- refresh workspace snapshot&#xa;- load last failed step / verification" vertex="1">
-          <mxGeometry height="100" width="250" x="590" as="geometry" />
+        <mxCell id="4" parent="3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=13;" value="FastAPI&#xa;orchestrator/app/api.py&#xa;- /event&#xa;- /runs&#xa;- /tasks&#xa;- /control/*" vertex="1">
+          <mxGeometry x="30" y="60" width="290" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="103" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;" value="PLAN_READY&#xa;- build plan or Ralph plan&#xa;- validate schema&#xa;- apply policy gates" vertex="1">
-          <mxGeometry height="100" width="230" x="930" y="-45" as="geometry" />
+        <mxCell id="5" parent="3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=13;" value="Streamlit UI&#xa;streamlit_app.py&#xa;- monitor runs&#xa;- submit tasks&#xa;- render planning intelligence" vertex="1">
+          <mxGeometry x="30" y="230" width="290" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="104" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" value="WAITING_APPROVAL&#xa;- risky plan or risky step&#xa;- external approve event required" vertex="1">
-          <mxGeometry height="90" width="230" x="780" y="200" as="geometry" />
+        <mxCell id="6" parent="3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=13;" value="Event gateways&#xa;- task submitted events&#xa;- control events&#xa;- result stream consumers" vertex="1">
+          <mxGeometry x="30" y="400" width="290" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="105" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" value="WAITING_PLAN_REVIEW&#xa;- missing quality requirement&#xa;- contract / plan issue&#xa;- manual correction needed" vertex="1">
-          <mxGeometry height="90" width="250" x="970" y="310" as="geometry" />
+        <mxCell id="7" parent="1" style="swimlane;whiteSpace=wrap;html=1;startSize=28;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" value="Application">
+          <mxGeometry x="500" y="140" width="460" height="760" as="geometry" />
         </mxCell>
-        <mxCell id="106" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;" value="EXECUTING&#xa;- run step N&#xa;- policy check&#xa;- Codex / shell execution&#xa;- refresh workspace snapshot after each step" vertex="1">
-          <mxGeometry height="110" width="250" x="1220" y="-190" as="geometry" />
+        <mxCell id="8" parent="7" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=13;" value="Use cases&#xa;- ProcessRunTickUseCase&#xa;- SubmitTaskUseCase&#xa;- HandleControlEventUseCase&#xa;- FinalizeRunUseCase" vertex="1">
+          <mxGeometry x="30" y="60" width="380" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="107" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" value="VERIFYING&#xa;- verifier parses metrics / outputs&#xa;- quality gate evaluates target&#xa;- improvement strategy may be generated" vertex="1">
-          <mxGeometry height="100" width="240" x="1750" y="-185" as="geometry" />
+        <mxCell id="9" parent="7" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=13;" value="Stage handlers&#xa;- context_stage.py&#xa;- planning_stage.py&#xa;- execution_stage.py&#xa;- verification_stage.py&#xa;- packaging_stage.py" vertex="1">
+          <mxGeometry x="30" y="220" width="380" height="150" as="geometry" />
         </mxCell>
-        <mxCell id="108" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" value="PACKAGING&#xa;- create patch bundle&#xa;- write result.json&#xa;- publish run.result" vertex="1">
-          <mxGeometry height="90" width="240" x="1510" y="250" as="geometry" />
+        <mxCell id="10" parent="7" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=13;" value="Application services&#xa;- quality_gate_service.py&#xa;- improvement_strategy_service.py&#xa;- baseline_research_service.py&#xa;- micro_training_policy_service.py&#xa;- ralph_service.py&#xa;- workspace_snapshot_service.py" vertex="1">
+          <mxGeometry x="30" y="410" width="380" height="210" as="geometry" />
         </mxCell>
-        <mxCell id="109" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" value="COMPLETED" vertex="1">
-          <mxGeometry height="70" width="140" x="1510" y="420" as="geometry" />
+        <mxCell id="11" parent="1" style="swimlane;whiteSpace=wrap;html=1;startSize=28;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" value="Domain">
+          <mxGeometry x="1020" y="140" width="300" height="330" as="geometry" />
         </mxCell>
-        <mxCell id="110" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" value="FAILED" vertex="1">
-          <mxGeometry height="70" width="120" x="2170" y="500" as="geometry" />
+        <mxCell id="12" parent="11" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=13;" value="Core domain rules&#xa;- domain/state_machine.py&#xa;- pure state transitions&#xa;- invariants for terminal / non-terminal states" vertex="1">
+          <mxGeometry x="25" y="60" width="240" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="111" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" value="CANCELLED" vertex="1">
-          <mxGeometry height="70" width="120" x="330" y="340" as="geometry" />
+        <mxCell id="13" parent="11" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=13;" value="No dependencies on&#xa;- SQLite&#xa;- Redis&#xa;- HTTP&#xa;- Codex CLI&#xa;- filesystem" vertex="1">
+          <mxGeometry x="25" y="220" width="240" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="112" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=14;" value="Replan loop&#xa;- execution failure replan&#xa;- quality replan&#xa;- Ralph next cycle" vertex="1">
-          <mxGeometry height="100" width="250" x="970" y="570" as="geometry" />
+        <mxCell id="14" parent="1" style="swimlane;whiteSpace=wrap;html=1;startSize=28;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;" value="Infrastructure / Adapters">
+          <mxGeometry x="1020" y="520" width="640" height="380" as="geometry" />
         </mxCell>
-        <mxCell id="113" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=14;" value="Missing-file recovery&#xa;- detect MISSING_FILE&#xa;- inspect workspace snapshot&#xa;- adjust plan / rerun once" vertex="1">
-          <mxGeometry height="100" width="250" x="1310" y="810" as="geometry" />
+        <mxCell id="15" parent="14" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=13;" value="Persistence&#xa;- db.py&#xa;- repositories&#xa;- schema_manager.py&#xa;- experiment_attempts_repository.py" vertex="1">
+          <mxGeometry x="25" y="55" width="180" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="114" edge="1" parent="1" source="100" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="101" value="">
+        <mxCell id="16" parent="14" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=13;" value="Planning adapters&#xa;- planning/planner.py&#xa;- Ralph backlog&#xa;- prompt compaction" vertex="1">
+          <mxGeometry x="235" y="55" width="180" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="17" parent="14" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=13;" value="Execution adapters&#xa;- codex_runner.py&#xa;- verifier.py&#xa;- artifacts.py&#xa;- policy.py" vertex="1">
+          <mxGeometry x="445" y="55" width="170" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="18" parent="14" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=13;" value="Runtime composition&#xa;- runtime/service.py&#xa;- runtime/session.py&#xa;- event bus wiring" vertex="1">
+          <mxGeometry x="25" y="220" width="180" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="19" edge="1" parent="1" source="4" target="8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="HTTP calls">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="115" edge="1" parent="1" source="101" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="102" value="">
+        <mxCell id="20" edge="1" parent="1" source="5" target="8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="operator actions">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="116" edge="1" parent="1" source="102" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="103" value="">
+        <mxCell id="21" edge="1" parent="1" source="8" target="9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="dispatch by run status">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="117" edge="1" parent="1" source="103" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" target="104" value="approval required">
+        <mxCell id="22" edge="1" parent="1" source="8" target="10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="use application services">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="118" edge="1" parent="1" source="103" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" target="105" value="plan review required">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="1045" y="120" />
-              <mxPoint x="1140" y="120" />
-            </Array>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="119" edge="1" parent="1" source="103" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="106" value="">
+        <mxCell id="23" edge="1" parent="1" source="8" target="12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="enforce domain rules">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="120" edge="1" parent="1" source="106" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="107" value="all steps complete">
+        <mxCell id="24" edge="1" parent="1" source="10" target="15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="persist state">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="121" edge="1" parent="1" source="107" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="108" value="quality target met">
+        <mxCell id="25" edge="1" parent="1" source="10" target="16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="planner / Ralph">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="122" edge="1" parent="1" source="108" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="109" value="">
+        <mxCell id="26" edge="1" parent="1" source="10" target="17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="Codex / verify / publish">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="123" edge="1" parent="1" source="101" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" target="111" value="cancel">
+        <mxCell id="27" edge="1" parent="1" source="8" target="18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="composed by runtime">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="124" edge="1" parent="1" source="103" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" target="110" value="planner / policy / infra failure">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="1980" y="30" />
-              <mxPoint x="1980" y="535" />
-            </Array>
-          </mxGeometry>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="architecture-page" name="Architecture">
+    <mxGraphModel dx="1600" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;" value="External clients&#xa;- Streamlit UI&#xa;- HTTP / CLI callers&#xa;- control producers / result consumers" vertex="1">
+          <mxGeometry x="40" y="80" width="220" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="125" edge="1" parent="1" source="104" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="106" value="approve">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="1260" y="245" />
-            </Array>
-          </mxGeometry>
+        <mxCell id="3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;" value="FastAPI API&#xa;orchestrator/app/api.py&#xa;- /event&#xa;- /runs&#xa;- /tasks&#xa;- /control/*" vertex="1">
+          <mxGeometry x="320" y="80" width="220" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="126" edge="1" parent="1" source="105" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="102" value="retry / corrected plan">
+        <mxCell id="4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;" value="Event bus&#xa;Redis or in-memory&#xa;- agent.tasks&#xa;- agent.control&#xa;- agent.internal&#xa;- agent.results" vertex="1">
+          <mxGeometry x="600" y="75" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;" value="Runtime composition&#xa;runtime/service.py + runtime/session.py&#xa;- SessionManager&#xa;- worker loops&#xa;- service wiring" vertex="1">
+          <mxGeometry x="890" y="75" width="250" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;" value="ProcessRunTickUseCase&#xa;- thin coordinator&#xa;- loads run + task&#xa;- dispatches stage handlers&#xa;- publishes terminal results" vertex="1">
+          <mxGeometry x="1200" y="75" width="260" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="7" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" value="Run stage handlers&#xa;- context_stage&#xa;- planning_stage&#xa;- execution_stage&#xa;- verification_stage&#xa;- packaging_stage" vertex="1">
+          <mxGeometry x="1200" y="260" width="260" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="8" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" value="Planning intelligence&#xa;- PlanningContextService&#xa;- BaselineResearchService&#xa;- MicroTrainingPolicyService&#xa;- RalphScenarioService&#xa;- WorkspaceSnapshotService" vertex="1">
+          <mxGeometry x="840" y="320" width="290" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="9" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" value="Planning adapters&#xa;- Planner&#xa;- Ralph backlog&#xa;- Prompt content compaction&#xa;- Plan contract service" vertex="1">
+          <mxGeometry x="480" y="330" width="270" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="10" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;" value="Execution adapters&#xa;- CodexRunner&#xa;- PolicyEngine&#xa;- ExecutionGuardService&#xa;- Verifier&#xa;- ArtifactPublisher" vertex="1">
+          <mxGeometry x="840" y="560" width="290" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="11" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" value="SQLite persistence&#xa;- tasks / runs / run_steps / artifacts&#xa;- experiment_attempts with recipe_snapshot / recipe_diff&#xa;- PDF chunks FTS" vertex="1">
+          <mxGeometry x="1210" y="560" width="270" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="12" parent="1" style="shape=folder;tabWidth=60;tabHeight=20;tabPosition=left;html=1;boundedLbl=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" value="Workspace + knowledge FS&#xa;- workspace/runs/*&#xa;- workspace/demo/*&#xa;- .openin/runs/*&#xa;- knowledge/*" vertex="1">
+          <mxGeometry x="1520" y="560" width="240" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="13" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" value="Research sources&#xa;- arXiv direct adapter&#xa;- Hugging Face Papers adapter&#xa;- optional custom backend&#xa;- pdf_fts fallback" vertex="1">
+          <mxGeometry x="480" y="570" width="270" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="14" edge="1" parent="1" source="2" target="3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="HTTP">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="127" edge="1" parent="1" source="107" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="112" value="replan conditions">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="1870" y="120" />
-              <mxPoint x="1305" y="120" />
-            </Array>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="128" edge="1" parent="1" source="112" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" target="102" value="restart cycle">
+        <mxCell id="15" edge="1" parent="1" source="3" target="4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="submit / control / monitor">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="129" edge="1" parent="1" source="106" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;entryX=0.286;entryY=-0.026;entryDx=0;entryDy=0;entryPerimeter=0;" target="113" value="missing python file / path mismatch">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="1381" y="150" />
-              <mxPoint x="1381" y="150" />
-            </Array>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="130" edge="1" parent="1" source="113" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;entryX=1;entryY=1;entryDx=0;entryDy=0;" target="106" value="recover and continue">
-          <mxGeometry relative="1" x="-0.2809" as="geometry">
-            <mxPoint as="offset" />
-            <Array as="points">
-              <mxPoint x="1470" y="660" />
-              <mxPoint x="1470" y="660" />
-            </Array>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="131" edge="1" parent="1" source="107" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" target="110" value="verification / packaging failure">
+        <mxCell id="16" edge="1" parent="1" source="4" target="5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="consume streams">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="132" edge="1" parent="1" source="108" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" target="110" value="packaging failure">
+        <mxCell id="17" edge="1" parent="1" source="5" target="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="run tick">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="18" edge="1" parent="1" source="6" target="7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="dispatch by status">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="19" edge="1" parent="1" source="7" target="8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="planning context + strategy">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="20" edge="1" parent="1" source="7" target="9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="build / replan">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="21" edge="1" parent="1" source="7" target="10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="execute / verify / publish">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="22" edge="1" parent="1" source="6" target="11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="persist run state">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="23" edge="1" parent="1" source="10" target="12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="artifacts + run-scoped metrics">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="24" edge="1" parent="1" source="8" target="13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="baseline / research retrieval">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="25" edge="1" parent="1" source="13" target="8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="research summary">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="26" edge="1" parent="1" source="11" target="8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="experiment history + recipe diffs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="external-page" name="External Connections">
+    <mxGraphModel dx="1600" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=15;fontStyle=1;" value="Orchestrator core&#xa;- API + runtime + use cases&#xa;- planning + execution + verification&#xa;- research + experiment memory" vertex="1">
+          <mxGeometry x="740" y="350" width="320" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" value="Streamlit UI&#xa;- operator monitor&#xa;- create task&#xa;- approve / cancel" vertex="1">
+          <mxGeometry x="150" y="90" width="210" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" value="HTTP / CLI clients&#xa;- POST /event&#xa;- GET /runs&#xa;- control endpoints" vertex="1">
+          <mxGeometry x="490" y="80" width="220" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" value="Redis streams&#xa;- agent.tasks&#xa;- agent.control&#xa;- agent.internal&#xa;- agent.results" vertex="1">
+          <mxGeometry x="1090" y="80" width="220" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="6" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" value="SQLite DB&#xa;- runs&#xa;- tasks&#xa;- run_steps&#xa;- experiment_attempts" vertex="1">
+          <mxGeometry x="1420" y="90" width="210" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="7" parent="1" style="shape=folder;tabWidth=60;tabHeight=20;tabPosition=left;html=1;boundedLbl=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" value="Workspace filesystem&#xa;- workspace/demo&#xa;- workspace/runs&#xa;- .openin/runs&#xa;- knowledge" vertex="1">
+          <mxGeometry x="1450" y="570" width="220" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="8" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" value="Codex CLI / OpenAI path&#xa;- codex exec&#xa;- prompt contract&#xa;- skills&#xa;- shell execution" vertex="1">
+          <mxGeometry x="1060" y="700" width="250" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="9" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" value="arXiv API&#xa;export.arxiv.org/api/query&#xa;- query-driven paper lookup" vertex="1">
+          <mxGeometry x="450" y="720" width="220" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="10" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" value="Hugging Face Papers API&#xa;/api/daily_papers&#xa;- trending enrichment" vertex="1">
+          <mxGeometry x="120" y="710" width="240" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="11" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;" value="Optional research backend&#xa;custom HTTP endpoint&#xa;- fallback only&#xa;- title / url / snippet payload" vertex="1">
+          <mxGeometry x="750" y="720" width="230" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="12" edge="1" parent="1" source="3" target="2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="monitor + control">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="13" edge="1" parent="1" source="4" target="2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="API requests">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="14" edge="1" parent="1" source="2" target="5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="publish / consume events">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="15" edge="1" parent="1" source="2" target="6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="persist state">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="16" edge="1" parent="1" source="2" target="7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="read / write artifacts">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="17" edge="1" parent="1" source="2" target="8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="execute Codex and shell steps">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="18" edge="1" parent="1" source="2" target="9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="baseline paper lookup">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="19" edge="1" parent="1" source="2" target="10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeWidth=2;" value="trending paper enrichment">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="20" edge="1" parent="1" source="2" target="11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;endArrow=block;strokeWidth=2;" value="optional fallback">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
       </root>
