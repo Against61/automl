@@ -149,6 +149,8 @@ CREATE TABLE IF NOT EXISTS experiment_attempts (
     quality_reason TEXT,
     metrics_json TEXT NOT NULL,
     hyperparameters_json TEXT NOT NULL,
+    recipe_snapshot_json TEXT,
+    recipe_diff_json TEXT,
     strategy_json TEXT,
     skill_paths_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,

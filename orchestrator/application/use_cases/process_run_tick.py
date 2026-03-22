@@ -85,7 +85,7 @@ class ProcessRunTickUseCase:
         )
         improvement_strategy_service = ImprovementStrategyService(quality_gate_service=quality_gate_service)
         micro_training_policy_service = MicroTrainingPolicyService(quality_gate_service=quality_gate_service)
-        baseline_research_service = BaselineResearchService(db)
+        baseline_research_service = BaselineResearchService(db, settings)
         workspace_snapshot_service = WorkspaceSnapshotService()
         ralph_service = RalphScenarioService(
             settings=settings,

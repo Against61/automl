@@ -18,6 +18,7 @@ class SchemaManager:
             await self.ensure_runs_goal_signature_column()
             await self.ensure_runs_execution_cycle_columns()
             await self.ensure_run_steps_step_title_column()
+            await self.ensure_experiment_attempt_recipe_columns()
             await self.db.conn.commit()
 
     async def ensure_runs_goal_signature_column(self) -> None:
@@ -53,3 +54,14 @@ class SchemaManager:
         if "step_title" in columns:
             return
         await self.db.conn.execute("ALTER TABLE run_steps ADD COLUMN step_title TEXT")
+
+    async def ensure_experiment_attempt_recipe_columns(self) -> None:
+        cursor = await self.db.conn.execute("PRAGMA table_info(experiment_attempts)")
+        try:
+            columns = [str(row["name"]) for row in (await cursor.fetchall())]
+        finally:
+            await cursor.close()
+        if "recipe_snapshot_json" not in columns:
+            await self.db.conn.execute("ALTER TABLE experiment_attempts ADD COLUMN recipe_snapshot_json TEXT")
+        if "recipe_diff_json" not in columns:
+            await self.db.conn.execute("ALTER TABLE experiment_attempts ADD COLUMN recipe_diff_json TEXT")

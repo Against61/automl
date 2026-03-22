@@ -20,6 +20,7 @@ from orchestrator.application.services.workspace_snapshot_service import Workspa
 from orchestrator.application.use_cases.run_tick.hyperparameters import HyperparameterService
 from orchestrator.application.use_cases.run_tick.planning_context import PlanningContextService
 from orchestrator.application.use_cases.process_run_tick import ProcessRunTickUseCase
+from orchestrator.config import Settings
 from orchestrator.persistence.db import Database, normalize_verification_payload
 from orchestrator.execution.verifier import VerificationResult
 from orchestrator.persistence.schemas import (
@@ -1672,7 +1673,16 @@ def test_planning_context_service_filters_lightning_skill_paths():
 async def test_baseline_research_service_builds_dataset_brief(tmp_path: Path):
     db = Database(tmp_path / "orchestrator.db")
     await db.connect()
-    service = BaselineResearchService(db)
+    settings = Settings(
+        _env_file=None,
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+        llm_provider="stub",
+        research_backend_url="",
+    )
+    service = BaselineResearchService(db, settings)
     task = {
         "goal": "Train a FashionMNIST classifier and report accuracy",
         "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 92%"]),
@@ -1709,4 +1719,46 @@ async def test_baseline_research_service_builds_dataset_brief(tmp_path: Path):
 
     assert "dataset_hint: fashionmnist" in summary.lower()
     assert "lookup_mode: pdf_fts" in summary
+    assert "research_hit_1:" in summary
+
+
+@pytest.mark.asyncio
+async def test_baseline_research_service_prefers_web_backend_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db = Database(tmp_path / "orchestrator.db")
+    await db.connect()
+    settings = Settings(
+        _env_file=None,
+        sqlite_path=tmp_path / "orchestrator.db",
+        workspace_root=tmp_path / "workspace",
+        pdf_root=tmp_path / "workspace" / "knowledge" / "pdfs",
+        runs_root=tmp_path / "workspace" / "runs",
+        llm_provider="stub",
+        research_backend_url="https://research.local/search",
+    )
+    service = BaselineResearchService(db, settings)
+
+    async def fake_lookup(*, queries: list[str]) -> list[BaselineResearchService.WebResearchHit]:
+        assert queries
+        return [
+            BaselineResearchService.WebResearchHit(
+                title="FashionMNIST baseline note",
+                url="https://example.com/fashionmnist",
+                snippet="Use held-out validation and compare optimizer schedule before widening architecture.",
+            )
+        ]
+
+    monkeypatch.setattr(service, "_lookup_web_hits", fake_lookup)
+
+    summary = await service.build_summary(
+        task={
+            "goal": "Train a FashionMNIST classifier and report accuracy",
+            "constraints_json": json.dumps(["RALPH_REQUIRED_METRIC: accuracy >= 92%"]),
+            "pdf_scope_json": json.dumps([]),
+        },
+        workspace_path=tmp_path,
+        experiment_history=[],
+        previous_verification={"metrics": {"eval_accuracy": 0.88}},
+    )
+
+    assert "lookup_mode: web_backend" in summary
     assert "research_hit_1:" in summary

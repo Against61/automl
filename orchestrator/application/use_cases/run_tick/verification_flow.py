@@ -90,6 +90,11 @@ class VerificationFlowService:
             verification.get("improvement_strategy")
         )
         selected_skill_paths = self.planning_context_service.selected_skill_paths_from_verification(verification)
+        recipe_snapshot = self.recipe_snapshot_from_verification(verification)
+        recipe_diff = self.recipe_diff_from_verification(
+            current_verification=verification,
+            previous_verification=run.verification_json if isinstance(run.verification_json, dict) else None,
+        )
         return {
             "ts": datetime.now().astimezone().isoformat(),
             "workspace_id": run.workspace_id,
@@ -102,6 +107,8 @@ class VerificationFlowService:
             "quality_reason": str(quality_gate.get("reason") or ""),
             "metrics": metrics,
             "hyperparameters": latest_hyperparameters,
+            "recipe_snapshot": recipe_snapshot,
+            "recipe_diff": recipe_diff,
             "skill_paths": selected_skill_paths,
             "chosen_intervention_id": (
                 improvement_strategy.get("chosen_intervention_id")
@@ -138,6 +145,8 @@ class VerificationFlowService:
             quality_reason=str(payload["quality_reason"]),
             metrics=dict(payload["metrics"]),
             hyperparameters=dict(payload["hyperparameters"]),
+            recipe_snapshot=payload.get("recipe_snapshot") if isinstance(payload.get("recipe_snapshot"), dict) else None,
+            recipe_diff=payload.get("recipe_diff") if isinstance(payload.get("recipe_diff"), dict) else None,
             strategy=payload.get("strategy"),
             skill_paths=list(payload["skill_paths"]),
         )
@@ -185,3 +194,63 @@ class VerificationFlowService:
                 continue
             return max(0, min(parsed, 20))
         return default_limit
+
+    @staticmethod
+    def recipe_snapshot_from_verification(verification: dict[str, Any]) -> dict[str, Any]:
+        latest_hyperparameters = (
+            verification.get("latest_hyperparameters")
+            if isinstance(verification.get("latest_hyperparameters"), dict)
+            else {}
+        )
+        snapshot: dict[str, Any] = {}
+        for key in ("epochs", "learning_rate", "batch_size", "optimizer", "weight_decay", "dropout", "model"):
+            if key in latest_hyperparameters:
+                snapshot[key] = latest_hyperparameters.get(key)
+        strategy = verification.get("improvement_strategy")
+        if isinstance(strategy, dict):
+            chosen_id = (
+                strategy.get("chosen_intervention_id")
+                or (
+                    strategy.get("chosen_intervention", {}).get("id")
+                    if isinstance(strategy.get("chosen_intervention"), dict)
+                    else None
+                )
+            )
+            if chosen_id:
+                snapshot["intervention"] = chosen_id
+            chosen = strategy.get("chosen_intervention")
+            if isinstance(chosen, dict):
+                skill_paths = chosen.get("skill_paths")
+                if isinstance(skill_paths, list) and skill_paths:
+                    snapshot["skill_paths"] = [str(item).strip() for item in skill_paths[:3] if str(item).strip()]
+        micro_training_policy = verification.get("micro_training_policy")
+        if isinstance(micro_training_policy, dict):
+            phase = str(micro_training_policy.get("phase") or "").strip()
+            if phase:
+                snapshot["micro_training_phase"] = phase
+            next_epochs = micro_training_policy.get("next_epochs")
+            if next_epochs is not None:
+                snapshot["next_epochs"] = next_epochs
+        return snapshot
+
+    def recipe_diff_from_verification(
+        self,
+        *,
+        current_verification: dict[str, Any],
+        previous_verification: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        current_snapshot = self.recipe_snapshot_from_verification(current_verification)
+        previous_snapshot = self.recipe_snapshot_from_verification(previous_verification or {}) if previous_verification else {}
+        changes: dict[str, dict[str, Any]] = {}
+        for key in sorted(set(previous_snapshot.keys()) | set(current_snapshot.keys())):
+            before = previous_snapshot.get(key)
+            after = current_snapshot.get(key)
+            if before == after:
+                continue
+            changes[key] = {"before": before, "after": after}
+        if not changes:
+            return None
+        return {
+            "changed_keys": list(changes.keys()),
+            "changes": changes,
+        }

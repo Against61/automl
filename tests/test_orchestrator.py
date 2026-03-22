@@ -2549,8 +2549,26 @@ async def test_database_records_and_lists_experiment_attempts(tmp_path: Path):
         quality_reason="accuracy below target",
         metrics={"accuracy": 0.87},
         hyperparameters={"epochs": 5, "learning_rate": 0.001},
+        recipe_snapshot={"epochs": 5, "learning_rate": 0.001, "intervention": "targeted_finetune"},
+        recipe_diff=None,
         strategy={"chosen_intervention_id": "targeted_finetune"},
         skill_paths=["skills/pytorch-lightning/SKILL.md"],
+    )
+    await db.record_experiment_attempt(
+        workspace_id="demo",
+        goal_signature="sig-1",
+        run_id="run-2",
+        task_id="task-1",
+        run_attempt=2,
+        verification_status="passed",
+        quality_status="failed",
+        quality_reason="accuracy still below target",
+        metrics={"accuracy": 0.9},
+        hyperparameters={"epochs": 8, "learning_rate": 0.0005},
+        recipe_snapshot={"epochs": 8, "learning_rate": 0.0005, "intervention": "capacity_and_schedule_upgrade"},
+        recipe_diff=None,
+        strategy={"chosen_intervention_id": "capacity_and_schedule_upgrade"},
+        skill_paths=["skills/kaggle/SKILL.md"],
     )
 
     attempts = await db.list_experiment_attempts(
@@ -2558,10 +2576,12 @@ async def test_database_records_and_lists_experiment_attempts(tmp_path: Path):
         goal_signature="sig-1",
         limit=5,
     )
-    assert len(attempts) == 1
+    assert len(attempts) == 2
     assert attempts[0]["metrics"]["accuracy"] == pytest.approx(0.87)
     assert attempts[0]["hyperparameters"]["epochs"] == 5
     assert attempts[0]["skill_paths"] == ["skills/pytorch-lightning/SKILL.md"]
+    assert attempts[1]["recipe_snapshot"]["epochs"] == 8
+    assert attempts[1]["recipe_diff"]["changed_keys"] == ["epochs", "intervention", "learning_rate"]
 
 
 @pytest.mark.asyncio

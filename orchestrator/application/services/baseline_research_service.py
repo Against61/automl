@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from orchestrator.application.services.task_intent_service import TaskIntentService
+from orchestrator.config import Settings
 from orchestrator.execution.metric_parsing import normalize_metric_key
 
 if TYPE_CHECKING:
@@ -14,6 +18,12 @@ if TYPE_CHECKING:
 
 
 class BaselineResearchService:
+    @dataclass(slots=True)
+    class WebResearchHit:
+        title: str
+        url: str
+        snippet: str
+
     _DATASET_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("fashionmnist", ("fashionmnist", "fashion-mnist", "fashion mnist")),
         ("mnist", ("mnist",)),
@@ -101,8 +111,9 @@ class BaselineResearchService:
         "roc_auc",
     )
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, settings: Settings) -> None:
         self.db = db
+        self.settings = settings
         self.task_intent_service = TaskIntentService()
 
     async def build_summary(
@@ -129,6 +140,7 @@ class BaselineResearchService:
         )
         hits = await self._lookup_research_hits(queries=queries, pdf_scope=pdf_scope)
         plateau_state = self._plateau_state(experiment_history or [], preferred_metric=current_key or requirement_metric)
+        web_hits = await self._lookup_web_hits(queries=queries)
 
         lines = [
             f"- dataset_hint: {dataset_hint}",
@@ -139,6 +151,16 @@ class BaselineResearchService:
             lines.append(f"- current_position: last seen {current_key}={current_value:.4f}")
         if plateau_state:
             lines.append(f"- recent_pattern: {plateau_state}")
+
+        if web_hits:
+            lines.append("- lookup_mode: web_backend")
+            lines.append(f"- research_queries: {' | '.join(queries[:2])}")
+            for index, hit in enumerate(web_hits[: self.settings.research_backend_max_hits], start=1):
+                lines.append(
+                    f"- research_hit_{index}: {hit.title} | {hit.url} -> {self._snippet(hit.snippet)}"
+                )
+            lines.extend(self._research_focus_from_web_hits(web_hits))
+            return "\n".join(lines)
 
         if hits:
             lines.append("- lookup_mode: pdf_fts")
@@ -284,6 +306,65 @@ class BaselineResearchService:
                     return hits
         return hits
 
+    async def _lookup_web_hits(self, *, queries: list[str]) -> list[WebResearchHit]:
+        backend_url = self.settings.research_backend_url.strip()
+        if not backend_url:
+            return []
+        payload = {
+            "queries": queries,
+            "max_hits": int(self.settings.research_backend_max_hits),
+        }
+        raw = await self._fetch_web_backend(backend_url=backend_url, payload=payload)
+        return self._parse_web_backend_response(raw)
+
+    async def _fetch_web_backend(self, *, backend_url: str, payload: dict[str, Any]) -> Any:
+        body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "codex-orchestrator-research/1.0",
+        }
+        if self.settings.research_backend_api_key:
+            headers["Authorization"] = f"Bearer {self.settings.research_backend_api_key}"
+
+        def _request() -> Any:
+            request = urllib.request.Request(backend_url, data=body, headers=headers, method="POST")
+            timeout = float(self.settings.research_backend_timeout_sec)
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read().decode("utf-8", errors="ignore")
+            return json.loads(raw)
+
+        try:
+            import asyncio
+
+            return await asyncio.to_thread(_request)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+            return None
+
+    def _parse_web_backend_response(self, payload: Any) -> list[WebResearchHit]:
+        if isinstance(payload, dict):
+            if isinstance(payload.get("results"), list):
+                items = payload.get("results")
+            elif isinstance(payload.get("hits"), list):
+                items = payload.get("hits")
+            else:
+                items = []
+        elif isinstance(payload, list):
+            items = payload
+        else:
+            items = []
+
+        hits: list[BaselineResearchService.WebResearchHit] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or item.get("name") or "").strip()
+            url = str(item.get("url") or item.get("link") or "").strip()
+            snippet = str(item.get("snippet") or item.get("summary") or item.get("text") or "").strip()
+            if not (title or snippet):
+                continue
+            hits.append(self.WebResearchHit(title=title or "untitled", url=url or "n/a", snippet=snippet))
+        return hits[: int(self.settings.research_backend_max_hits)]
+
     def _research_focus_from_hits(self, hits: list[PdfChunkRow]) -> list[str]:
         lines: list[str] = []
         combined = " ".join(row.text.lower() for row in hits[:3])
@@ -295,6 +376,19 @@ class BaselineResearchService:
             lines.append("- secondary_focus: check whether the next intervention should prioritize augmentation or regularization instead of more epochs")
         if not lines:
             lines.append("- next_research_focus: map retrieved baseline guidance to the current workspace recipe before broad search")
+        return lines[:2]
+
+    def _research_focus_from_web_hits(self, hits: list[WebResearchHit]) -> list[str]:
+        combined = " ".join(hit.snippet.lower() for hit in hits[:3])
+        lines: list[str] = []
+        if "validation" in combined or "held-out" in combined or "benchmark" in combined:
+            lines.append("- next_research_focus: keep benchmark and held-out evaluation assumptions explicit before copying recipe changes")
+        if "scheduler" in combined or "warmup" in combined or "cosine" in combined:
+            lines.append("- secondary_focus: compare the current optimizer schedule against the retrieved scheduler advice before architecture churn")
+        elif "augmentation" in combined or "regularization" in combined:
+            lines.append("- secondary_focus: test augmentation or regularization changes before paying for longer runs")
+        if not lines:
+            lines.append("- next_research_focus: translate the retrieved web guidance into a concrete config or recipe diff before coding")
         return lines[:2]
 
     def _plateau_state(self, attempts: list[dict[str, Any]], preferred_metric: str | None) -> str | None:

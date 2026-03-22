@@ -135,6 +135,7 @@ class PlanningContextService:
             quality_reason = str(item.get("quality_reason") or "").strip()
             metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
             hyperparameters = item.get("hyperparameters") if isinstance(item.get("hyperparameters"), dict) else {}
+            recipe_diff = item.get("recipe_diff") if isinstance(item.get("recipe_diff"), dict) else {}
             skill_paths = item.get("skill_paths") if isinstance(item.get("skill_paths"), list) else []
             chosen = None
             strategy = item.get("strategy") if isinstance(item.get("strategy"), dict) else {}
@@ -157,6 +158,10 @@ class PlanningContextService:
                 f"chosen={chosen or 'n/a'} metrics=[{metric_preview}] "
                 f"hyperparameters=[{hp_preview}] skills=[{skill_preview}]"
             )
+            if recipe_diff:
+                changed_keys = recipe_diff.get("changed_keys")
+                if isinstance(changed_keys, list) and changed_keys:
+                    line += f" recipe_diff=[{', '.join(str(item) for item in changed_keys[:4])}]"
             if quality_reason:
                 line += f" reason={quality_reason}"
             lines.append(line)
@@ -401,21 +406,6 @@ class PlanningContextService:
         return ", ".join(repeated[:3]) or None
 
     @classmethod
-    def _recent_recipe_diffs(cls, attempts: list[dict[str, Any]]) -> list[str]:
-        diffs: list[str] = []
-        previous_snapshot: dict[str, Any] | None = None
-        previous_attempt = None
-        for item in attempts[-4:]:
-            snapshot = cls._recipe_snapshot(item)
-            if previous_snapshot is not None:
-                changes = cls._recipe_changes(previous_snapshot, snapshot)
-                if changes:
-                    diffs.append(f"{previous_attempt}->{item.get('attempt')}: {', '.join(changes[:4])}")
-            previous_snapshot = snapshot
-            previous_attempt = item.get("attempt")
-        return diffs[:3]
-
-    @classmethod
     def _recent_hyperparameter_moves(cls, attempts: list[dict[str, Any]]) -> str | None:
         latest_values: dict[str, Any] = {}
         for item in attempts[-3:]:
@@ -452,10 +442,10 @@ class PlanningContextService:
     def _recipe_snapshot(cls, item: dict[str, Any]) -> dict[str, Any]:
         hyperparameters = item.get("hyperparameters") if isinstance(item.get("hyperparameters"), dict) else {}
         strategy = item.get("strategy") if isinstance(item.get("strategy"), dict) else {}
+        recipe_snapshot = item.get("recipe_snapshot") if isinstance(item.get("recipe_snapshot"), dict) else {}
         chosen_intervention = cls._extract_intervention_id(item)
-        snapshot: dict[str, Any] = {
-            "intervention": chosen_intervention or "n/a",
-        }
+        snapshot: dict[str, Any] = dict(recipe_snapshot)
+        snapshot.setdefault("intervention", chosen_intervention or "n/a")
         for key in ("epochs", "learning_rate", "batch_size", "optimizer", "weight_decay", "dropout", "model"):
             if key in hyperparameters:
                 snapshot[key] = hyperparameters.get(key)
@@ -481,6 +471,29 @@ class PlanningContextService:
                 continue
             changes.append(f"{key} {before!r}->{after!r}")
         return changes
+
+    @classmethod
+    def _recent_recipe_diffs(cls, attempts: list[dict[str, Any]]) -> list[str]:
+        diffs: list[str] = []
+        previous_snapshot: dict[str, Any] | None = None
+        previous_attempt = None
+        for item in attempts[-4:]:
+            persisted_diff = item.get("recipe_diff") if isinstance(item.get("recipe_diff"), dict) else None
+            if persisted_diff and previous_attempt is not None:
+                changed_keys = persisted_diff.get("changed_keys")
+                if isinstance(changed_keys, list) and changed_keys:
+                    diffs.append(f"{previous_attempt}->{item.get('attempt')}: {', '.join(str(key) for key in changed_keys[:4])}")
+                    previous_snapshot = cls._recipe_snapshot(item)
+                    previous_attempt = item.get("attempt")
+                    continue
+            snapshot = cls._recipe_snapshot(item)
+            if previous_snapshot is not None:
+                changes = cls._recipe_changes(previous_snapshot, snapshot)
+                if changes:
+                    diffs.append(f"{previous_attempt}->{item.get('attempt')}: {', '.join(changes[:4])}")
+            previous_snapshot = snapshot
+            previous_attempt = item.get("attempt")
+        return diffs[:3]
 
     @classmethod
     def _extract_metric_signal(cls, item: dict[str, Any]) -> tuple[str, float, bool] | None:
